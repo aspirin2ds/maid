@@ -8,6 +8,8 @@ function getRequired(name: string): string {
 
 export const env = {
   DATABASE_URL: getRequired('DATABASE_URL'),
-  REDIS_URL: getRequired("REDIS_URL"),
+  REDIS_URL: getRequired('REDIS_URL'),
+  BETTER_AUTH_URL: getRequired('BETTER_AUTH_URL'),
+  AUTH_ORIGIN: getRequired('AUTH_ORIGIN'),
   PORT: Number(process.env.PORT ?? 3000),
 }

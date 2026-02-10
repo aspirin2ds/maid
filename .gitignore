@@ -1,4 +1,4 @@
-# deps
+.DS_Store
 node_modules/
 drizzle/
 .env
