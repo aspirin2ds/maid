@@ -1,12 +1,10 @@
 {
   "name": "maid",
   "scripts": {
+    "dev:infra": "docker compose up -d postgres redis",
     "dev": "bun run --hot src/index.ts",
     "start": "bun run src/index.ts",
     "test": "bun test",
-    "test:real-env": "bun test test/websocket-real-env.test.ts",
-    "test:unit": "bun test --preload ./test/setup.mts test/unit",
-    "start:infra": "docker compose up -d postgres redis",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate"
   },
@@ -15,7 +13,10 @@
     "drizzle-orm": "^0.45.1",
     "hono": "^4.11.9",
     "ioredis": "^5.9.2",
-    "postgres": "^3.4.8"
+    "ollama": "^0.6.3",
+    "openai": "^6.21.0",
+    "postgres": "^3.4.8",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/bun": "latest",
