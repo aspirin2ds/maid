@@ -1,53 +1,12 @@
-import type { Context } from 'hono'
-import type { AppEnv, HandlerDeps } from '../types'
+import type { WSEvents } from 'hono/ws'
+import { createChatMaid } from './chat'
 
-type WebSocketLike = {
-  send: (message: string) => void
+export interface Maid extends WSEvents { }
+
+const maids: Record<string, Maid> = {
+  chat: createChatMaid(),
 }
 
-function toTextPayload(data: string | ArrayBufferLike | Blob | ArrayBufferView) {
-  if (typeof data === 'string') {
-    return data
-  }
-
-  if (data instanceof Blob) {
-    return '[non-text message]'
-  }
-
-  const bytes = ArrayBuffer.isView(data)
-    ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
-    : new Uint8Array(data)
-
-  return new TextDecoder().decode(bytes)
-}
-
-export function getWebsocketHandler({ db, redis }: HandlerDeps) {
-  const hasClients = Boolean(db) && Boolean(redis)
-
-  return (c: Context<AppEnv>) => {
-    const userId = c.get('userId')
-
-    return {
-      onOpen(_event: Event, ws: WebSocketLike) {
-        if (!hasClients) {
-          console.error('WebSocket /stream missing database or redis client')
-        }
-        ws.send(JSON.stringify({ type: 'connected' }))
-      },
-      onMessage(event: MessageEvent, ws: WebSocketLike) {
-        ws.send(
-          JSON.stringify({
-            type: 'echo',
-            data: toTextPayload(event.data),
-          })
-        )
-      },
-      onClose() {
-        console.log(`WebSocket /stream connection closed for user ${userId}`)
-      },
-      onError(event: Event) {
-        console.error(`WebSocket /stream error for user ${userId}`, event)
-      },
-    }
-  }
+export function getMaid(maidId: string): Maid | undefined {
+  return maids[maidId]
 }

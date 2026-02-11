@@ -9,7 +9,7 @@ import postgres from 'postgres'
 import Redis from 'ioredis'
 
 import { env } from './env'
-import { getWebsocketHandler } from './maid'
+import { getMaid } from './maid'
 import type { AppEnv, BetterAuthSessionResponse } from './types'
 
 import * as schema from './db/schema'
@@ -80,9 +80,15 @@ const requireSession = createMiddleware(async (c, next) => {
 })
 
 app.get(
-  '/stream',
+  '/stream/:maid',
   requireSession,
-  upgradeWebSocket(getWebsocketHandler({ db, redis }))
+  async (c, next) => {
+    const maid = getMaid(c.req.param('maid'))
+    if (!maid) {
+      return c.json({ error: 'Maid not found' }, 404)
+    }
+    return upgradeWebSocket(() => maid)(c, next)
+  },
 )
 
 app.get('/', (c) => c.text('Hello, Maid!'))

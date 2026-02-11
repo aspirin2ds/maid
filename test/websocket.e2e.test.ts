@@ -1,3 +1,4 @@
+import 'dotenv/config'
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { drizzle } from 'drizzle-orm/postgres-js'
 import { migrate } from 'drizzle-orm/postgres-js/migrator'
@@ -78,6 +79,49 @@ function waitForMessage(ws: WebSocket, timeoutMs = 8_000): Promise<Record<string
         const parsed = parseJsonMessage(event.data)
         cleanup()
         resolve(parsed)
+      } catch (error) {
+        cleanup()
+        reject(error)
+      }
+    }
+
+    const onError = () => {
+      cleanup()
+      reject(new Error('WebSocket emitted an error event'))
+    }
+
+    ws.addEventListener('message', onMessage)
+    ws.addEventListener('error', onError)
+  })
+}
+
+function waitForMessages(
+  ws: WebSocket,
+  until: (msg: Record<string, unknown>) => boolean,
+  timeoutMs = 30_000,
+): Promise<Record<string, unknown>[]> {
+  return new Promise((resolve, reject) => {
+    const messages: Record<string, unknown>[] = []
+
+    const timeout = setTimeout(() => {
+      cleanup()
+      reject(new Error(`Timed out waiting for messages after ${timeoutMs}ms`))
+    }, timeoutMs)
+
+    const cleanup = () => {
+      clearTimeout(timeout)
+      ws.removeEventListener('message', onMessage)
+      ws.removeEventListener('error', onError)
+    }
+
+    const onMessage = (event: MessageEvent) => {
+      try {
+        const parsed = parseJsonMessage(event.data)
+        messages.push(parsed)
+        if (until(parsed)) {
+          cleanup()
+          resolve(messages)
+        }
       } catch (error) {
         cleanup()
         reject(error)
@@ -194,24 +238,63 @@ describe('WebSocket route with real dependencies', () => {
   })
 
   test(
-    'connects to /stream and exchanges WebSocket messages after Better Auth',
+    'connects to /stream/chat and receives connected message',
     async () => {
       if (!appServer) {
         throw new Error('App server was not started')
       }
 
-      const wsUrl = `ws://127.0.0.1:${appServer.port}/stream?token=${AUTH_TOKEN}`
+      const wsUrl = `ws://127.0.0.1:${appServer.port}/stream/chat?token=${AUTH_TOKEN}`
       const ws = new WebSocket(wsUrl)
       openSocket = ws
 
       await waitForOpen(ws)
 
       const connected = await waitForMessage(ws)
-      expect(connected).toEqual({ type: 'connected' })
+      expect(connected).toEqual({ type: 'connected', maid: 'chat' })
+    },
+    120_000
+  )
 
-      ws.send('hello from test')
-      const echoed = await waitForMessage(ws)
-      expect(echoed).toEqual({ type: 'echo', data: 'hello from test' })
+  test(
+    'sends a message and receives streamed response',
+    async () => {
+      if (!appServer) {
+        throw new Error('App server was not started')
+      }
+
+      const wsUrl = `ws://127.0.0.1:${appServer.port}/stream/chat?token=${AUTH_TOKEN}`
+      const ws = new WebSocket(wsUrl)
+      openSocket = ws
+
+      await waitForOpen(ws)
+      await waitForMessage(ws) // consume connected message
+
+      ws.send('say hello')
+      const messages = await waitForMessages(ws, (msg) => msg.type === 'text.done')
+
+      const deltas = messages.filter((m) => m.type === 'text.delta')
+      expect(deltas.length).toBeGreaterThan(0)
+      for (const delta of deltas) {
+        expect(typeof delta.data).toBe('string')
+      }
+      expect(messages[messages.length - 1]).toEqual({ type: 'text.done' })
+    },
+    120_000
+  )
+
+  test(
+    'returns 404 for unknown maid',
+    async () => {
+      if (!appServer) {
+        throw new Error('App server was not started')
+      }
+
+      const response = await fetch(
+        `http://127.0.0.1:${appServer.port}/stream/unknown?token=${AUTH_TOKEN}`,
+        { headers: { connection: 'upgrade', upgrade: 'websocket' } },
+      )
+      expect(response.status).toBe(404)
     },
     120_000
   )
