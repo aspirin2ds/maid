@@ -4,12 +4,15 @@
     "dev:infra": "docker compose up -d postgres redis",
     "dev": "bun run --hot src/index.ts",
     "start": "bun run src/index.ts",
-    "test:unit": "bun test test/*.unit.test.ts",
-    "test:e2e": "bun test test/*.e2e.test.ts",
+    "test:unit": "bun test test/unit",
+    "test:integration": "if ! docker info >/dev/null 2>&1; then echo 'Docker is required for integration tests (Testcontainers).'; exit 1; fi; TESTCONTAINERS_RYUK_DISABLED=true bun test test/integration/session.unit.test.ts && TESTCONTAINERS_RYUK_DISABLED=true bun test test/integration/chat-session.unit.test.ts && TESTCONTAINERS_RYUK_DISABLED=true bun test test/integration/memory-queue-debounce.unit.test.ts",
+    "test:e2e": "if ! docker info >/dev/null 2>&1; then echo 'Docker is required for e2e tests.'; exit 1; fi; TESTCONTAINERS_RYUK_DISABLED=true bun test test/e2e --max-concurrency 1",
+    "test:all": "bun run test:unit && bun run test:integration && bun run test:e2e",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate"
   },
   "dependencies": {
+    "bullmq": "^5.67.3",
     "dotenv": "^17.2.4",
     "drizzle-orm": "^0.45.1",
     "hono": "^4.11.9",

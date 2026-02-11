@@ -8,6 +8,7 @@ import { sessions, messages } from './db/schema'
 type SessionRow = typeof sessions.$inferSelect
 type MessageRow = typeof messages.$inferSelect
 type MessageRole = (typeof schema.messageRoleEnum.enumValues)[number]
+type Db = PostgresJsDatabase<typeof schema>
 
 export type Session = {
   id: number
@@ -19,17 +20,7 @@ export type Session = {
   getMessages(): Promise<MessageRow[]>
 }
 
-export async function createSession(
-  userId: string,
-  db: PostgresJsDatabase<typeof schema>,
-  redis: Redis,
-  title?: string,
-): Promise<Session> {
-  const [row] = await db
-    .insert(sessions)
-    .values({ userId, title })
-    .returning()
-
+function buildSession(row: SessionRow, userId: string, db: Db): Session {
   const sessionId = row.id
 
   return {
@@ -68,4 +59,35 @@ export async function createSession(
         .orderBy(messages.createdAt)
     },
   }
+}
+
+export async function loadSession(
+  sessionId: number,
+  userId: string,
+  db: Db,
+  _redis: Redis,
+): Promise<Session | null> {
+  const [row] = await db
+    .select()
+    .from(sessions)
+    .where(and(eq(sessions.id, sessionId), eq(sessions.userId, userId)))
+    .limit(1)
+
+  if (!row) return null
+
+  return buildSession(row, userId, db)
+}
+
+export async function createSession(
+  userId: string,
+  db: Db,
+  redis: Redis,
+  title?: string,
+): Promise<Session> {
+  const [row] = await db
+    .insert(sessions)
+    .values({ userId, title })
+    .returning()
+
+  return buildSession(row, userId, db)
 }

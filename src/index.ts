@@ -10,6 +10,7 @@ import Redis from 'ioredis'
 
 import { env } from './env'
 import { getMaid } from './maid'
+import { createMemoryExtractionQueue } from './memory/queue'
 import type { AppEnv, BetterAuthSessionResponse } from './types'
 
 import * as schema from './db/schema'
@@ -17,8 +18,10 @@ const dbClient = postgres(env.DATABASE_URL)
 const db = drizzle(dbClient, { schema })
 
 const redis = new Redis(env.REDIS_URL, { lazyConnect: true })
+const memoryExtractionQueue = createMemoryExtractionQueue(redis, db)
 
 const app = new Hono<AppEnv>()
+let isShuttingDown = false
 
 const unauthorized = (c: Context<AppEnv>) => {
   c.header('WWW-Authenticate', 'Bearer')
@@ -83,7 +86,15 @@ app.get(
   '/stream/:maid',
   requireSession,
   async (c, next) => {
-    const maid = getMaid(c.req.param('maid'), { userId: c.get('userId'), db, redis })
+    const sessionId = c.req.query('sessionId')
+    const userId = c.get('userId')
+    const maid = getMaid(c.req.param('maid'), {
+      userId,
+      sessionId: sessionId ? Number(sessionId) : undefined,
+      db,
+      redis,
+      enqueueMemoryExtraction: memoryExtractionQueue.enqueueMemoryExtraction,
+    })
     if (!maid) {
       return c.json({ error: 'Maid not found' }, 404)
     }
@@ -102,8 +113,54 @@ app.get('/db/health', async (c) => {
 
 app.get('/redis/health', async (c) => c.json({ ok: (await redis.ping()) === 'PONG' }))
 
+async function closeResources() {
+  const results = await Promise.allSettled([
+    memoryExtractionQueue.close(),
+    redis.quit(),
+    dbClient.end({ timeout: 5 }),
+  ])
+
+  const rejected = results.filter((result) => result.status === 'rejected')
+  if (rejected.length > 0) {
+    console.error('[shutdown] failed to close all resources', rejected)
+    throw new Error('Failed to close all resources')
+  }
+}
+
+async function gracefulShutdown(signal: string) {
+  if (isShuttingDown) return
+  isShuttingDown = true
+
+  console.log(`[shutdown] received ${signal}, closing resources...`)
+  const timeout = setTimeout(() => {
+    console.error('[shutdown] timed out, forcing exit')
+    process.exit(1)
+  }, 10_000)
+  timeout.unref?.()
+
+  try {
+    await closeResources()
+  } catch {
+    clearTimeout(timeout)
+    process.exit(1)
+  }
+
+  clearTimeout(timeout)
+  console.log('[shutdown] completed')
+  process.exit(0)
+}
+
+process.once('SIGINT', () => {
+  void gracefulShutdown('SIGINT')
+})
+
+process.once('SIGTERM', () => {
+  void gracefulShutdown('SIGTERM')
+})
+
 export default {
   port: env.PORT,
   fetch: app.fetch,
   websocket,
+  close: closeResources,
 }

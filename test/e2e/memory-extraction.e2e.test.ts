@@ -6,9 +6,9 @@ import { migrate } from 'drizzle-orm/postgres-js/migrator'
 import postgres from 'postgres'
 import { GenericContainer, Wait } from 'testcontainers'
 
-import * as schema from '../src/db/schema'
-import { memories, messages, sessions } from '../src/db/schema'
-import { extractMemory } from '../src/memory/extraction'
+import * as schema from '../../src/db/schema'
+import { memories, messages, sessions } from '../../src/db/schema'
+import { extractMemory } from '../../src/memory/extraction'
 
 const USER_ID = 'user_test'
 

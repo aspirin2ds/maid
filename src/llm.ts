@@ -71,6 +71,34 @@ export async function structuredResponse<T extends ZodType>(
   }
 }
 
+export async function textGenerate(prompt: string, think: boolean = false): Promise<string> {
+  const start = Date.now()
+  try {
+    const response = await ollama.generate({
+      model: env.OLLAMA_GENERATE_MODEL,
+      prompt,
+      think,
+      keep_alive: "-1m",
+    })
+    logger.info({
+      fn: 'textGenerate',
+      model: env.OLLAMA_GENERATE_MODEL,
+      durationMs: Date.now() - start,
+      inputTokens: response.prompt_eval_count,
+      outputTokens: response.eval_count,
+    }, 'llm.completed')
+    return response.response.trim()
+  } catch (error) {
+    logger.error({
+      fn: 'textGenerate',
+      model: env.OLLAMA_GENERATE_MODEL,
+      durationMs: Date.now() - start,
+      error: error instanceof Error ? error.message : String(error),
+    }, 'llm.failed')
+    throw error
+  }
+}
+
 function extractJSON(raw: string): string {
   const fenced = raw.match(/```(?:json)?\s*\n?([\s\S]*?)```/)
   if (fenced) return fenced[1].trim()

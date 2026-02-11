@@ -62,14 +62,16 @@ Output: {"facts" : ["Name is John", "Is a Software engineer"]}
 Input: Me favourite movies are Inception and Interstellar.
 Output: {"facts" : ["Favourite movies are Inception and Interstellar"]}
 
-Return the facts and preferences in a JSON format as shown above. You MUST return a valid JSON object with a 'facts' key containing an array of strings.
+Return the extracted facts as plain text lines only.
+Use this exact output format:
+- One fact per line, prefixed with "FACT: "
+- If nothing should be stored, output exactly one line: "NONE"
 
 Remember the following:
 - Today's date is ${new Date().toISOString().split('T')[0]}.
 - Do not return anything from the custom few shot example prompts provided above.
-- If you do not find anything relevant in the below conversation, you can return an empty list corresponding to the "facts" key.
+- If you do not find anything relevant in the below conversation, return exactly: NONE
 - Create the facts based on the user and assistant messages only. Do not pick anything from the system messages.
-- Make sure to return the response in the JSON format mentioned in the examples.
 - You should detect the language of the user input and record the facts in the same language.
 - For basic factual statements, break them down into individual facts if they contain multiple pieces of information.
 
@@ -230,7 +232,7 @@ There are specific guidelines to select which operation to perform:
                 ]
             }
 
-Below is the current content of my memory which I have collected till now. You have to update it in the following format only:
+Below is the current content of my memory which I have collected till now:
 
 ${JSON.stringify(existingMemories, null, 2)}
 
@@ -241,11 +243,25 @@ ${JSON.stringify(newFacts, null, 2)}
 Follow the instruction mentioned below:
 - Do not return anything from the custom few shot example prompts provided above.
 - If the current memory is empty, then you have to add the new retrieved facts to the memory.
-- You should return the updated memory in only JSON format as shown below. The memory key should be the same if no changes are made.
 - If there is an addition, generate a new key and add the new memory corresponding to it.
 - If there is a deletion, the memory key-value pair should be removed from the memory.
 - If there is an update, the ID key should remain the same and only the value needs to be updated.
 
-You MUST respond with this exact JSON schema:
-{"memory": [{"id": "<string>", "text": "<string>", "event": "ADD|UPDATE|DELETE|NONE", "old_memory": "<string or omitted>"}]}`
+You MUST respond with one action per line using this exact pipe-delimited format:
+<EVENT>|<ID>|<TEXT>|<OLD_MEMORY>
+
+Rules for line format:
+- EVENT must be ADD, UPDATE, DELETE, or NONE.
+- For ADD, ID can be a newly generated string and OLD_MEMORY should be left empty.
+- For UPDATE, ID must be one of the provided existing IDs and OLD_MEMORY should contain the previous text.
+- For DELETE, ID must be one of the provided existing IDs and TEXT can repeat current text.
+- For NONE, ID must be one of the provided existing IDs and OLD_MEMORY should be left empty.
+- If there are no actions to take, output one NONE line for each existing memory item.
+- Do not include extra separators. If text contains '|', replace it with '/'.
+
+Examples:
+ADD|new-1|Name is John|
+UPDATE|0|Loves to play cricket with friends|User likes to play cricket
+DELETE|1|Loves cheese pizza|
+NONE|2|User is a software engineer|`
 }

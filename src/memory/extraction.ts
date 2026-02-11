@@ -3,7 +3,7 @@ import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js'
 
 import type * as schema from '../db/schema'
 import { memories, messages, sessions, toSqlVector } from '../db/schema'
-import { embed, structuredResponse } from '../llm'
+import { embed, textGenerate } from '../llm'
 import { logger } from '../logger'
 import {
   FactRetrievalSchema,
@@ -13,11 +13,14 @@ import {
   type MemoryAction,
 } from './prompts'
 
-const SIMILARITY_THRESHOLD = 0.7
-const SIMILAR_TOP_K = 5
-const MAX_RETRIES = 3
+const THRESHOLD = 0.7
+const TOP_K = 5
+const RETRIES = 3
 
 type Db = PostgresJsDatabase<typeof schema>
+
+type ExistingMem = { id: string; text: string }
+type IdMap = Map<string, number>
 
 export interface ExtractionResult {
   factsExtracted: number
@@ -27,9 +30,7 @@ export interface ExtractionResult {
   memoriesUnchanged: number
 }
 
-// --- Stage 1: Fetch unextracted messages ---
-
-async function fetchUnextractedMessages(db: Db, userId: string): Promise<{ ids: number[]; text: string }> {
+async function loadPendingMessages(db: Db, userId: string): Promise<{ ids: number[]; text: string }> {
   const rows = await db
     .select({ id: messages.id, role: messages.role, content: messages.content })
     .from(messages)
@@ -39,102 +40,88 @@ async function fetchUnextractedMessages(db: Db, userId: string): Promise<{ ids: 
 
   if (rows.length === 0) return { ids: [], text: '' }
 
-  const text = rows.map((r) => `${r.role}: ${r.content}`).join('\n')
-  return { ids: rows.map((r) => r.id), text }
+  return {
+    ids: rows.map((r) => r.id),
+    text: rows.map((r) => `${r.role}: ${r.content}`).join('\n'),
+  }
 }
 
-// --- Stage 2: Extract facts ---
-
-async function extractFacts(conversationText: string): Promise<string[]> {
-  const prompt = getFactRetrievalPrompt(conversationText)
-  const result = await structuredResponse(prompt, FactRetrievalSchema)
-  return result.facts || []
+async function extractFacts(messageText: string): Promise<string[]> {
+  const prompt = getFactRetrievalPrompt(messageText)
+  const raw = await textGenerate(prompt)
+  const facts = parseFactList(raw)
+  return FactRetrievalSchema.parse({ facts }).facts || []
 }
-
-// --- Stage 3: Embed facts ---
 
 async function embedFacts(facts: string[]): Promise<Map<string, number[]>> {
   const embeddings = await embed(facts)
-  const embedMap = new Map<string, number[]>()
-  facts.forEach((fact, i) => embedMap.set(fact, embeddings[i]))
-  return embedMap
+  return new Map(facts.map((fact, index) => [fact, embeddings[index]]))
 }
 
-// --- Stage 4: Find similar existing memories ---
-
-async function findSimilarMemories(
+async function findNearbyMemories(
   db: Db,
   userId: string,
   facts: string[],
-  embedMap: Map<string, number[]>,
+  embeddingsByFact: Map<string, number[]>,
 ): Promise<Map<string, { id: number; text: string }>> {
-  const existingById = new Map<string, { id: number; text: string }>()
+  const nearby = new Map<string, { id: number; text: string }>()
 
   for (const fact of facts) {
-    const vec = embedMap.get(fact)!
-    const maxDist = 1 - SIMILARITY_THRESHOLD
-    const distance = cosineDistance(memories.embedding, vec)
+    const embedding = embeddingsByFact.get(fact)!
+    const maxDist = 1 - THRESHOLD
+    const distance = cosineDistance(memories.embedding, embedding)
+
     const rows = await db
       .select({ id: memories.id, content: memories.content })
       .from(memories)
       .where(and(eq(memories.userId, userId), lte(distance, maxDist)))
       .orderBy(distance)
-      .limit(SIMILAR_TOP_K)
+      .limit(TOP_K)
 
     for (const row of rows) {
-      existingById.set(String(row.id), { id: row.id, text: row.content })
+      nearby.set(String(row.id), { id: row.id, text: row.content })
     }
   }
 
-  return existingById
+  return nearby
 }
 
-// --- Stage 5: Generate memory actions with retry + repair ---
-
-async function generateMemoryActions(
-  mapped: { id: string; text: string }[],
-  facts: string[],
-  tempToReal: Map<string, number>,
-): Promise<MemoryAction[]> {
-  async function callLLM(attempt: number): Promise<MemoryAction[]> {
+async function generateActions(existing: ExistingMem[], facts: string[], idMap: IdMap): Promise<MemoryAction[]> {
+  const run = async (attempt: number): Promise<MemoryAction[]> => {
     const start = Date.now()
-    const prompt = getUpdateMemoryPrompt(mapped, facts)
-    const result = await structuredResponse(prompt, MemoryUpdateSchema)
+    const prompt = getUpdateMemoryPrompt(existing, facts)
+    const raw = await textGenerate(prompt)
+    const actions = MemoryUpdateSchema.parse({ memory: parseMemoryActions(raw) }).memory
+
     logger.info({
-      fn: 'generateMemoryActions',
+      fn: 'generateActions',
       attempt,
       durationMs: Date.now() - start,
-      actionCount: result.memory.length,
+      actionCount: actions.length,
     }, 'memory.actions.generated')
-    return result.memory
+
+    return actions
   }
 
-  let actions = repairMemoryActions(await callLLM(1), tempToReal)
+  let actions = repairInvalidActions(await run(1), idMap)
 
-  for (let attempt = 1; attempt < MAX_RETRIES; attempt++) {
-    const invalid = actions.filter(
-      (a) => a.event !== 'ADD' && a.event !== 'NONE' && !tempToReal.has(a.id),
-    )
+  for (let attempt = 1; attempt < RETRIES; attempt++) {
+    const invalid = actions.filter((action) => action.event !== 'ADD' && action.event !== 'NONE' && !idMap.has(action.id))
     if (invalid.length === 0) break
 
-    logger.warn({
-      attempt,
-      invalidIds: invalid.map((a) => a.id),
-    }, 'memory.actions.invalid_ids')
-    actions = repairMemoryActions(await callLLM(attempt + 1), tempToReal)
+    logger.warn({ attempt, invalidIds: invalid.map((action) => action.id) }, 'memory.actions.invalid_ids')
+    actions = repairInvalidActions(await run(attempt + 1), idMap)
   }
 
-  return actions
+  return backfillMissingFactAdds(actions, existing, facts)
 }
 
-// --- Stage 6: Apply actions in transaction ---
-
-async function applyMemoryActions(
+async function applyActions(
   db: Db,
   userId: string,
   actions: MemoryAction[],
-  tempToReal: Map<string, number>,
-  embedMap: Map<string, number[]>,
+  idMap: IdMap,
+  embeddingsByFact: Map<string, number[]>,
 ): Promise<Pick<ExtractionResult, 'memoriesAdded' | 'memoriesUpdated' | 'memoriesDeleted' | 'memoriesUnchanged'>> {
   const stats = { memoriesAdded: 0, memoriesUpdated: 0, memoriesDeleted: 0, memoriesUnchanged: 0 }
 
@@ -145,37 +132,38 @@ async function applyMemoryActions(
         continue
       }
 
-      const realId = tempToReal.get(action.id)
+      const realId = idMap.get(action.id)
       if (action.event !== 'ADD' && realId == null) {
         logger.error({ event: action.event, actionId: action.id }, 'memory.action.invalid_id')
         continue
       }
 
-      if (action.event === 'ADD' || action.event === 'UPDATE') {
-        let embedding = embedMap.get(action.text)
-        if (!embedding) {
-          const [vec] = await embed(action.text)
-          embedding = vec
-        }
-        const vecSql = toSqlVector(embedding)
-
-        if (action.event === 'ADD') {
-          await tx.insert(memories).values({
-            userId,
-            content: action.text,
-            embedding: vecSql,
-          })
-          stats.memoriesAdded++
-        } else {
-          await tx
-            .update(memories)
-            .set({ content: action.text, embedding: vecSql, updatedAt: new Date() })
-            .where(eq(memories.id, realId!))
-          stats.memoriesUpdated++
-        }
-      } else {
+      if (action.event === 'DELETE') {
         await tx.delete(memories).where(eq(memories.id, realId!))
         stats.memoriesDeleted++
+        continue
+      }
+
+      let embedding = embeddingsByFact.get(action.text)
+      if (!embedding) {
+        const [newEmbedding] = await embed(action.text)
+        embedding = newEmbedding
+      }
+      const embeddingSql = toSqlVector(embedding)
+
+      if (action.event === 'ADD') {
+        await tx.insert(memories).values({
+          userId,
+          content: action.text,
+          embedding: embeddingSql,
+        })
+        stats.memoriesAdded++
+      } else {
+        await tx
+          .update(memories)
+          .set({ content: action.text, embedding: embeddingSql, updatedAt: new Date() })
+          .where(eq(memories.id, realId!))
+        stats.memoriesUpdated++
       }
     }
   })
@@ -183,58 +171,173 @@ async function applyMemoryActions(
   return stats
 }
 
-// --- Stage 7: Mark messages as extracted ---
+async function markMessagesExtracted(db: Db, ids: number[]) {
+  if (ids.length === 0) return
 
-async function markExtracted(db: Db, messageIds: number[]) {
-  if (messageIds.length === 0) return
   await db
     .update(messages)
     .set({ extractedAt: new Date() })
-    .where(inArray(messages.id, messageIds))
+    .where(inArray(messages.id, ids))
 }
 
-// --- Repair utilities ---
+function repairInvalidActions(actions: MemoryAction[], idMap: IdMap): MemoryAction[] {
+  const invalidActions = actions.filter((action) => (action.event === 'UPDATE' || action.event === 'DELETE') && !idMap.has(action.id))
+  if (invalidActions.length === 0) return actions
 
-function repairMemoryActions(
-  actions: MemoryAction[],
-  tempToReal: Map<string, number>,
-): MemoryAction[] {
-  const invalid = actions.filter(
-    (a) => (a.event === 'UPDATE' || a.event === 'DELETE') && !tempToReal.has(a.id),
-  )
-  if (invalid.length === 0) return actions
-
-  const noneByText = new Map<string, MemoryAction>()
-  for (const a of actions) {
-    if (a.event === 'NONE' && tempToReal.has(a.id)) {
-      noneByText.set(a.text, a)
-    }
+  const noneActionsByText = new Map<string, MemoryAction>()
+  for (const action of actions) {
+    if (action.event === 'NONE' && idMap.has(action.id)) noneActionsByText.set(action.text, action)
   }
 
-  const repairedIds = new Set<string>()
+  const droppedIds = new Set<string>()
 
-  for (const inv of invalid) {
-    if (!inv.old_memory) continue
-    const match = noneByText.get(inv.old_memory)
+  for (const action of invalidActions) {
+    if (!action.old_memory) continue
+    const match = noneActionsByText.get(action.old_memory)
     if (!match) continue
 
-    match.event = inv.event
-    match.old_memory = inv.old_memory
-    if (inv.event === 'UPDATE') {
-      match.text = inv.text
-    }
-    repairedIds.add(inv.id)
-    noneByText.delete(inv.old_memory)
+    match.event = action.event
+    match.old_memory = action.old_memory
+    if (action.event === 'UPDATE') match.text = action.text
+
+    droppedIds.add(action.id)
+    noneActionsByText.delete(action.old_memory)
   }
 
-  return actions.filter((a) => !repairedIds.has(a.id))
+  return actions.filter((action) => !droppedIds.has(action.id))
 }
 
-// --- Main orchestrator ---
+function parseFactList(raw: string): string[] {
+  const asJson = parseFactsFromJson(raw)
+  if (asJson) return asJson
+
+  const rows = normalizeLines(raw)
+  if (rows.length === 0) return []
+  if (rows.length === 1 && rows[0].toUpperCase() === 'NONE') return []
+
+  const facts = rows
+    .map((row) => row.replace(/^FACT:\s*/i, '').trim())
+    .filter((x) => x.length > 0 && x.toUpperCase() !== 'NONE')
+
+  return [...new Set(facts)]
+}
+
+function parseMemoryActions(raw: string): MemoryAction[] {
+  const asJson = parseActionsFromJson(raw)
+  if (asJson) return asJson
+
+  return normalizeLines(raw)
+    .map((row) => {
+      const parts = row.split('|').map((p) => p.trim())
+      if (parts.length < 3) return null
+
+      const [event, id, text, oldMemory = ''] = parts
+      const e = event.toUpperCase()
+      if (!['ADD', 'UPDATE', 'DELETE', 'NONE'].includes(e)) return null
+      if (!id) return null
+
+      const action: MemoryAction = {
+        event: e as MemoryAction['event'],
+        id,
+        text,
+      }
+
+      if (oldMemory) action.old_memory = oldMemory
+      return action
+    })
+    .filter((a): a is MemoryAction => a !== null)
+}
+
+function normalizeLines(raw: string): string[] {
+  return raw
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => line !== '```')
+    .filter((line) => !line.startsWith('```'))
+}
+
+function backfillMissingFactAdds(actions: MemoryAction[], existing: ExistingMem[], facts: string[]): MemoryAction[] {
+  const memoriesById = new Map(existing.map((memory) => [memory.id, memory.text]))
+  const addedTexts: string[] = []
+
+  for (const action of actions) {
+    if (action.event === 'ADD') {
+      addedTexts.push(action.text)
+      continue
+    }
+
+    if (action.event === 'DELETE') {
+      memoriesById.delete(action.id)
+      continue
+    }
+
+    memoriesById.set(action.id, action.text)
+  }
+
+  const finalTexts = [...memoriesById.values(), ...addedTexts]
+  const missingFacts = facts.filter((fact) => !hasTextMatch(fact, finalTexts))
+  if (missingFacts.length === 0) return actions
+
+  const maxId = actions
+    .map((action) => Number.parseInt(action.id, 10))
+    .filter((id) => Number.isFinite(id))
+    .reduce((max, id) => Math.max(max, id), -1)
+
+  let nextId = maxId + 1
+  const autoAddedActions = missingFacts.map((fact) => ({ id: String(nextId++), text: fact, event: 'ADD' as const }))
+  return [...actions, ...autoAddedActions]
+}
+
+function hasTextMatch(fact: string, values: string[]): boolean {
+  const normalizedFact = normalizeText(fact)
+  return values.some((text) => {
+    const normalizedText = normalizeText(text)
+    return normalizedText.includes(normalizedFact) || normalizedFact.includes(normalizedText)
+  })
+}
+
+function normalizeText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function parseFactsFromJson(raw: string): string[] | null {
+  try {
+    const parsed = JSON.parse(extractJson(raw)) as { facts?: unknown }
+    if (!parsed || !Array.isArray(parsed.facts)) return null
+    return parsed.facts.filter((f): f is string => typeof f === 'string')
+  } catch {
+    return null
+  }
+}
+
+function parseActionsFromJson(raw: string): MemoryAction[] | null {
+  try {
+    const parsed = JSON.parse(extractJson(raw)) as { memory?: unknown }
+    if (!parsed || !Array.isArray(parsed.memory)) return null
+    return parsed.memory as MemoryAction[]
+  } catch {
+    return null
+  }
+}
+
+function extractJson(raw: string): string {
+  const fenced = raw.match(/```(?:json)?\s*\n?([\s\S]*?)```/)
+  if (fenced) return fenced[1].trim()
+
+  const braces = raw.match(/[\[{][\s\S]*[\]}]/)
+  if (braces) return braces[0]
+
+  return raw.trim()
+}
 
 export async function extractMemory(db: Db, userId: string): Promise<ExtractionResult> {
   const start = Date.now()
-  const stats: ExtractionResult = {
+  const out: ExtractionResult = {
     factsExtracted: 0,
     memoriesAdded: 0,
     memoriesUpdated: 0,
@@ -243,61 +346,42 @@ export async function extractMemory(db: Db, userId: string): Promise<ExtractionR
   }
 
   try {
-    // Stage 1: Fetch unextracted messages
-    const { ids: messageIds, text: conversationText } = await fetchUnextractedMessages(db, userId)
-    if (messageIds.length === 0) {
+    const { ids, text } = await loadPendingMessages(db, userId)
+    if (ids.length === 0) {
       logger.info({ userId, durationMs: Date.now() - start }, 'memory.extraction.no_messages')
-      return stats
+      return out
     }
 
-    logger.info({ userId, messageCount: messageIds.length }, 'memory.extraction.started')
+    logger.info({ userId, messageCount: ids.length }, 'memory.extraction.started')
 
-    // Stage 2: Extract facts
-    const facts = await extractFacts(conversationText)
-    stats.factsExtracted = facts.length
+    const facts = await extractFacts(text)
+    out.factsExtracted = facts.length
+
     if (facts.length === 0) {
-      await markExtracted(db, messageIds)
+      await markMessagesExtracted(db, ids)
       logger.info({ userId, durationMs: Date.now() - start }, 'memory.extraction.no_facts')
-      return stats
+      return out
     }
 
-    // Stage 3: Embed facts
-    const embedMap = await embedFacts(facts)
+    const embeddingsByFact = await embedFacts(facts)
+    const nearbyMemories = await findNearbyMemories(db, userId, facts, embeddingsByFact)
 
-    // Stage 4: Find similar existing memories
-    const existingById = await findSimilarMemories(db, userId, facts, embedMap)
-
-    // Map temp IDs for LLM
-    const tempToReal = new Map<string, number>()
-    const mapped = [...existingById.entries()].map(([_key, mem], idx) => {
-      const tempId = String(idx)
-      tempToReal.set(tempId, mem.id)
-      return { id: tempId, text: mem.text }
+    const idMap: IdMap = new Map()
+    const existing: ExistingMem[] = [...nearbyMemories.values()].map((memory, i) => {
+      const id = String(i)
+      idMap.set(id, memory.id)
+      return { id, text: memory.text }
     })
 
-    // Stage 5: Generate memory actions
-    const actions = await generateMemoryActions(mapped, facts, tempToReal)
+    const actions = await generateActions(existing, facts, idMap)
+    Object.assign(out, await applyActions(db, userId, actions, idMap, embeddingsByFact))
 
-    // Stage 6: Apply actions
-    const actionStats = await applyMemoryActions(db, userId, actions, tempToReal, embedMap)
-    Object.assign(stats, actionStats)
+    await markMessagesExtracted(db, ids)
 
-    // Stage 7: Mark messages as extracted
-    await markExtracted(db, messageIds)
-
-    logger.info({
-      userId,
-      durationMs: Date.now() - start,
-      ...stats,
-    }, 'memory.extraction.completed')
-
-    return stats
+    logger.info({ userId, durationMs: Date.now() - start, ...out }, 'memory.extraction.completed')
+    return out
   } catch (err) {
-    logger.error({
-      err,
-      userId,
-      durationMs: Date.now() - start,
-    }, 'memory.extraction.failed')
+    logger.error({ err, userId, durationMs: Date.now() - start }, 'memory.extraction.failed')
     throw err
   }
 }

@@ -33,6 +33,9 @@
 - Keep tests deterministic and isolated; clean up containers/connections in `afterAll`.
 - Name tests by behavior (for example, `connects to postgres`).
 - Add tests in `test/*.test.ts`; group related cases with `describe()` blocks.
+- E2E policy: use real services only (no LLM/provider mocks in E2E tests).
+- E2E policy: provision Postgres and Redis with Testcontainers for each test suite.
+- E2E policy: OpenAI and Ollama in E2E tests must use the same provider settings from `.env`.
 
 ## Commit & Pull Request Guidelines
 - Current history is minimal (`init`), so adopt a consistent style now.

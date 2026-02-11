@@ -1,21 +1,29 @@
 import 'dotenv/config'
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { eq } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/postgres-js'
 import { migrate } from 'drizzle-orm/postgres-js/migrator'
 import postgres from 'postgres'
 import { GenericContainer, Wait } from 'testcontainers'
+
+import * as schema from '../../src/db/schema'
+import { memories, messages, sessions } from '../../src/db/schema'
 
 type AuthRequest = Request & {
   headers: Headers
 }
 
 const AUTH_TOKEN = 'test-token'
+const USER_ID = 'user_test'
 
 let postgresContainer: Awaited<ReturnType<GenericContainer['start']>> | null = null
 let redisContainer: Awaited<ReturnType<GenericContainer['start']>> | null = null
 let authServer: ReturnType<typeof Bun.serve> | null = null
 let appServer: ReturnType<typeof Bun.serve> | null = null
-let openSocket: WebSocket | null = null
+const openSockets: WebSocket[] = []
+let appClose: (() => Promise<void>) | null = null
+let dbClient: ReturnType<typeof postgres> | null = null
+let db: ReturnType<typeof drizzle<typeof schema>> | null = null
 
 async function runMigrations(databaseUrl: string) {
   const startedAt = Date.now()
@@ -167,6 +175,43 @@ function waitForOpen(ws: WebSocket, timeoutMs = 8_000): Promise<void> {
   })
 }
 
+async function waitForCondition(
+  condition: () => Promise<boolean>,
+  timeoutMs = 45_000,
+  intervalMs = 200,
+) {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < timeoutMs) {
+    if (await condition()) return
+    await Bun.sleep(intervalMs)
+  }
+  throw new Error(`Timed out waiting for condition after ${timeoutMs}ms`)
+}
+
+function trackSocket(ws: WebSocket) {
+  openSockets.push(ws)
+  return ws
+}
+
+async function closeSocket(ws: WebSocket, timeoutMs = 5_000) {
+  if (ws.readyState === WebSocket.CLOSED) return
+
+  await new Promise<void>((resolve) => {
+    const timeout = setTimeout(() => {
+      ws.removeEventListener('close', onClose)
+      resolve()
+    }, timeoutMs)
+
+    const onClose = () => {
+      clearTimeout(timeout)
+      resolve()
+    }
+
+    ws.addEventListener('close', onClose, { once: true })
+    ws.close(1000, 'test socket close')
+  })
+}
+
 describe('WebSocket route with real dependencies', () => {
   beforeAll(async () => {
     postgresContainer = await new GenericContainer('pgvector/pgvector:pg18')
@@ -210,8 +255,11 @@ describe('WebSocket route with real dependencies', () => {
     process.env.AUTH_ORIGIN = `http://127.0.0.1:${authServer.port}`
     process.env.PORT = '0'
     await runMigrations(process.env.DATABASE_URL)
+    dbClient = postgres(process.env.DATABASE_URL)
+    db = drizzle(dbClient, { schema })
 
-    const appModule = await import('../src/index')
+    const appModule = await import('../../src/index')
+    appClose = typeof appModule.default.close === 'function' ? appModule.default.close : null
     appServer = Bun.serve({
       port: 0,
       fetch: appModule.default.fetch,
@@ -220,12 +268,20 @@ describe('WebSocket route with real dependencies', () => {
   }, 120_000)
 
   afterAll(async () => {
-    if (openSocket && openSocket.readyState === WebSocket.OPEN) {
-      openSocket.close(1000, 'test complete')
+    for (const ws of openSockets) {
+      await closeSocket(ws)
     }
 
     appServer?.stop(true)
+    if (appClose) {
+      await appClose()
+      appClose = null
+    }
     authServer?.stop(true)
+    if (dbClient) {
+      await dbClient.end({ timeout: 5 })
+      dbClient = null
+    }
 
     if (redisContainer) {
       await redisContainer.stop()
@@ -246,42 +302,120 @@ describe('WebSocket route with real dependencies', () => {
       }
 
       const wsUrl = `ws://127.0.0.1:${appServer.port}/stream/chat?token=${AUTH_TOKEN}`
-      const ws = new WebSocket(wsUrl)
-      openSocket = ws
+      const ws = trackSocket(new WebSocket(wsUrl))
 
       await waitForOpen(ws)
 
-      const connected = await waitForMessage(ws)
-      expect(connected).toEqual({ type: 'connected', maid: 'chat' })
+      const welcome = await waitForMessage(ws)
+      expect(welcome.type).toBe('welcome')
+      expect(typeof welcome.message).toBe('string')
     },
     120_000
   )
 
   test(
-    'sends a message and receives streamed response',
+    'supports multi-turn conversation, session resume, and background memory extraction',
     async () => {
-      if (!appServer) {
+      if (!appServer || !db) {
         throw new Error('App server was not started')
       }
+      const testDb = db
+
+      await testDb.delete(memories).where(eq(memories.userId, USER_ID))
+      await testDb.delete(messages)
+      await testDb.delete(sessions).where(eq(sessions.userId, USER_ID))
 
       const wsUrl = `ws://127.0.0.1:${appServer.port}/stream/chat?token=${AUTH_TOKEN}`
-      const ws = new WebSocket(wsUrl)
-      openSocket = ws
+      const ws = trackSocket(new WebSocket(wsUrl))
 
       await waitForOpen(ws)
-      await waitForMessage(ws) // consume connected message
+      const welcome = await waitForMessage(ws)
+      expect(welcome.type).toBe('welcome')
 
-      ws.send('say hello')
-      const messages = await waitForMessages(ws, (msg) => msg.type === 'text.done')
+      ws.send(JSON.stringify({ e: 'input', msg: 'My name is Alex. I like ramen and I run every morning.' }))
+      const firstTurn = await waitForMessages(ws, (msg) => msg.type === 'text.done')
 
-      const deltas = messages.filter((m) => m.type === 'text.delta')
+      const created = firstTurn.find((m) => m.type === 'session.created')
+      expect(created).toBeDefined()
+      const sessionId = Number(created?.sessionId)
+      expect(Number.isFinite(sessionId)).toBe(true)
+
+      const deltas = firstTurn.filter((m) => m.type === 'text.delta')
       expect(deltas.length).toBeGreaterThan(0)
-      for (const delta of deltas) {
-        expect(typeof delta.data).toBe('string')
-      }
-      expect(messages[messages.length - 1]).toEqual({ type: 'text.done' })
+      expect(firstTurn[firstTurn.length - 1]).toEqual({ type: 'text.done' })
+
+      ws.send(JSON.stringify({ e: 'input', msg: 'Plan a high-protein dinner idea and keep my preferences in mind.' }))
+      const secondTurn = await waitForMessages(ws, (msg) => msg.type === 'text.done')
+      expect(secondTurn.some((m) => m.type === 'session.created')).toBe(false)
+
+      await closeSocket(ws)
+
+      await waitForCondition(async () => {
+        const sessionRows = await testDb.select({ id: sessions.id }).from(sessions).where(eq(sessions.userId, USER_ID))
+        return sessionRows.length === 1
+      })
+
+      const resumedWsUrl = `ws://127.0.0.1:${appServer.port}/stream/chat?token=${AUTH_TOKEN}&sessionId=${sessionId}`
+      const resumedWs = trackSocket(new WebSocket(resumedWsUrl))
+      await waitForOpen(resumedWs)
+      const resumed = await waitForMessage(resumedWs)
+      expect(resumed.type).toBe('session.resumed')
+      expect(resumed.sessionId).toBe(sessionId)
+
+      resumedWs.send(JSON.stringify({ e: 'input', msg: 'What exercise schedule did I mention?' }))
+      const resumedTurn = await waitForMessages(resumedWs, (msg) => msg.type === 'text.done')
+      expect(resumedTurn.filter((m) => m.type === 'text.delta').length).toBeGreaterThan(0)
+
+      await waitForCondition(async () => {
+        const persistedMessages = await testDb
+          .select({
+            role: messages.role,
+            content: messages.content,
+          })
+          .from(messages)
+          .where(eq(messages.sessionId, sessionId))
+
+        return persistedMessages.length >= 6
+      })
+
+      await waitForCondition(async () => {
+        const persistedMessages = await testDb
+          .select({ extractedAt: messages.extractedAt })
+          .from(messages)
+          .where(eq(messages.sessionId, sessionId))
+        if (persistedMessages.length < 6) return false
+        if (!persistedMessages.every((row) => row.extractedAt !== null)) return false
+
+        const memoryRows = await testDb
+          .select({ content: memories.content })
+          .from(memories)
+          .where(eq(memories.userId, USER_ID))
+        return memoryRows.length > 0
+      })
+
+      const sessionMessages = await testDb
+        .select({
+          role: messages.role,
+          content: messages.content,
+          extractedAt: messages.extractedAt,
+        })
+        .from(messages)
+        .where(eq(messages.sessionId, sessionId))
+        .orderBy(messages.createdAt)
+      expect(sessionMessages.length).toBeGreaterThanOrEqual(6)
+      expect(sessionMessages.every((row) => row.extractedAt !== null)).toBe(true)
+      expect(sessionMessages.map((row) => row.role).filter((r) => r === 'user').length).toBe(3)
+      expect(sessionMessages.map((row) => row.role).filter((r) => r === 'assistant').length).toBe(3)
+
+      const memoryRows = await testDb
+        .select({ content: memories.content })
+        .from(memories)
+        .where(eq(memories.userId, USER_ID))
+      expect(memoryRows.length).toBeGreaterThan(0)
+
+      await closeSocket(resumedWs)
     },
-    120_000
+    180_000
   )
 
   test(

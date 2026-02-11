@@ -5,9 +5,9 @@ import postgres from 'postgres'
 import { GenericContainer, Wait } from 'testcontainers'
 import Redis from 'ioredis'
 
-import * as schema from '../src/db/schema'
-import { sessions, messages } from '../src/db/schema'
-import { createSession } from '../src/session'
+import * as schema from '../../src/db/schema'
+import { sessions, messages } from '../../src/db/schema'
+import { createSession } from '../../src/session'
 
 const USER_ID = 'user_session_test'
 const OTHER_USER_ID = 'user_other'

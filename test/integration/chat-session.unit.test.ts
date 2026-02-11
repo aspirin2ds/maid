@@ -5,17 +5,25 @@ import postgres from 'postgres'
 import { GenericContainer, Wait } from 'testcontainers'
 import Redis from 'ioredis'
 
-import * as schema from '../src/db/schema'
-import { sessions } from '../src/db/schema'
-import { ChatMaid } from '../src/maid/chat'
+import * as schema from '../../src/db/schema'
+import { sessions } from '../../src/db/schema'
+import { ChatMaid } from '../../src/maid/chat'
+import { createMemoryService } from '../../src/memory/service'
 
-// Mock streamResponse to avoid real LLM calls
-mock.module('../src/llm', () => ({
-  streamResponse: () => ({
+function createMockStream() {
+  return {
     async *[Symbol.asyncIterator]() {
       yield { type: 'response.output_text.delta', delta: 'hi' }
     },
-  }),
+    on() { return this },
+    abort() {},
+  }
+}
+
+// Mock LLM calls to avoid real API calls
+mock.module('../../src/llm', () => ({
+  streamResponse: () => createMockStream(),
+  textGenerate: () => Promise.resolve('Welcome!'),
 }))
 
 const USER_ID = 'user_chat_test'
@@ -40,6 +48,10 @@ function createMockWs() {
 
 function parseMessages(ws: ReturnType<typeof createMockWs>) {
   return ws.sent.map((s) => JSON.parse(s))
+}
+
+function inputMsg(msg: string) {
+  return JSON.stringify({ e: 'input', msg })
 }
 
 beforeAll(async () => {
@@ -105,10 +117,10 @@ afterEach(async () => {
 
 describe('chat maid session concurrency', () => {
   test('creates exactly one session for a single message', async () => {
-    const maid = new ChatMaid({ userId: USER_ID, db, redis })
+    const maid = new ChatMaid({ userId: USER_ID, db, redis, memory: createMemoryService(USER_ID, db, redis) })
     const ws = createMockWs()
 
-    await maid.onMessage!(new MessageEvent('message', { data: 'hello' }), ws as any)
+    await maid.onMessage!(new MessageEvent('message', { data: inputMsg('hello') }), ws as any)
 
     const rows = await db.select().from(sessions)
     expect(rows).toHaveLength(1)
@@ -119,12 +131,12 @@ describe('chat maid session concurrency', () => {
   })
 
   test('creates exactly one session across sequential messages', async () => {
-    const maid = new ChatMaid({ userId: USER_ID, db, redis })
+    const maid = new ChatMaid({ userId: USER_ID, db, redis, memory: createMemoryService(USER_ID, db, redis) })
     const ws = createMockWs()
 
-    await maid.onMessage!(new MessageEvent('message', { data: 'first' }), ws as any)
-    await maid.onMessage!(new MessageEvent('message', { data: 'second' }), ws as any)
-    await maid.onMessage!(new MessageEvent('message', { data: 'third' }), ws as any)
+    await maid.onMessage!(new MessageEvent('message', { data: inputMsg('first') }), ws as any)
+    await maid.onMessage!(new MessageEvent('message', { data: inputMsg('second') }), ws as any)
+    await maid.onMessage!(new MessageEvent('message', { data: inputMsg('third') }), ws as any)
 
     const rows = await db.select().from(sessions)
     expect(rows).toHaveLength(1)
@@ -134,13 +146,13 @@ describe('chat maid session concurrency', () => {
   })
 
   test('creates exactly one session across concurrent messages', async () => {
-    const maid = new ChatMaid({ userId: USER_ID, db, redis })
+    const maid = new ChatMaid({ userId: USER_ID, db, redis, memory: createMemoryService(USER_ID, db, redis) })
     const ws = createMockWs()
 
     await Promise.all([
-      maid.onMessage!(new MessageEvent('message', { data: 'a' }), ws as any),
-      maid.onMessage!(new MessageEvent('message', { data: 'b' }), ws as any),
-      maid.onMessage!(new MessageEvent('message', { data: 'c' }), ws as any),
+      maid.onMessage!(new MessageEvent('message', { data: inputMsg('a') }), ws as any),
+      maid.onMessage!(new MessageEvent('message', { data: inputMsg('b') }), ws as any),
+      maid.onMessage!(new MessageEvent('message', { data: inputMsg('c') }), ws as any),
     ])
 
     const rows = await db.select().from(sessions)
@@ -151,12 +163,12 @@ describe('chat maid session concurrency', () => {
   })
 
   test('concurrent messages all resolve to the same session id', async () => {
-    const maid = new ChatMaid({ userId: USER_ID, db, redis })
+    const maid = new ChatMaid({ userId: USER_ID, db, redis, memory: createMemoryService(USER_ID, db, redis) })
     const ws = createMockWs()
 
     await Promise.all([
-      maid.onMessage!(new MessageEvent('message', { data: 'a' }), ws as any),
-      maid.onMessage!(new MessageEvent('message', { data: 'b' }), ws as any),
+      maid.onMessage!(new MessageEvent('message', { data: inputMsg('a') }), ws as any),
+      maid.onMessage!(new MessageEvent('message', { data: inputMsg('b') }), ws as any),
     ])
 
     const created = parseMessages(ws).filter((m: any) => m.type === 'session.created')
@@ -168,14 +180,14 @@ describe('chat maid session concurrency', () => {
   })
 
   test('separate maid instances create separate sessions', async () => {
-    const maid1 = new ChatMaid({ userId: USER_ID, db, redis })
-    const maid2 = new ChatMaid({ userId: USER_ID, db, redis })
+    const maid1 = new ChatMaid({ userId: USER_ID, db, redis, memory: createMemoryService(USER_ID, db, redis) })
+    const maid2 = new ChatMaid({ userId: USER_ID, db, redis, memory: createMemoryService(USER_ID, db, redis) })
     const ws1 = createMockWs()
     const ws2 = createMockWs()
 
     await Promise.all([
-      maid1.onMessage!(new MessageEvent('message', { data: 'hello' }), ws1 as any),
-      maid2.onMessage!(new MessageEvent('message', { data: 'hello' }), ws2 as any),
+      maid1.onMessage!(new MessageEvent('message', { data: inputMsg('hello') }), ws1 as any),
+      maid2.onMessage!(new MessageEvent('message', { data: inputMsg('hello') }), ws2 as any),
     ])
 
     const rows = await db.select().from(sessions)
