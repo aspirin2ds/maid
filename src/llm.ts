@@ -50,6 +50,7 @@ export async function structuredResponse<T extends ZodType>(
       model: env.OLLAMA_GENERATE_MODEL,
       prompt,
       format: toJSONSchema(schema),
+      keep_alive: "-1m"
     })
     logger.info({
       fn: 'structuredResponse',
@@ -81,7 +82,9 @@ function extractJSON(raw: string): string {
 export async function embed(input: string | string[]) {
   const start = Date.now()
   try {
-    const response = await ollama.embed({ model: env.OLLAMA_EMBEDDING_MODEL, input })
+    const response = await ollama.embed({
+      model: env.OLLAMA_EMBEDDING_MODEL, input, keep_alive: "-1m"
+    })
     logger.info({
       fn: 'getEmbeddings',
       model: env.OLLAMA_EMBEDDING_MODEL,

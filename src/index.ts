@@ -83,7 +83,7 @@ app.get(
   '/stream/:maid',
   requireSession,
   async (c, next) => {
-    const maid = getMaid(c.req.param('maid'))
+    const maid = getMaid(c.req.param('maid'), { userId: c.get('userId'), db, redis })
     if (!maid) {
       return c.json({ error: 'Maid not found' }, 404)
     }

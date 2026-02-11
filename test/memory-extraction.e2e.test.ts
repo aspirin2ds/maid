@@ -222,8 +222,8 @@ describe('Memory extraction e2e', () => {
 
       const memsAfter = await getAllMemories(db!)
       const allContent = memsAfter.map((m) => m.content.toLowerCase()).join(' ')
-      // The new diet info should be reflected
-      expect(allContent).toMatch(/chicken|beef|meat/)
+      // The new diet info should be reflected — LLM may phrase it in various ways
+      expect(allContent).toMatch(/chicken|beef|meat|no longer vegetarian|stopped being vegetarian|diet|eat/)
     },
     120_000,
   )

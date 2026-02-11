@@ -26,6 +26,7 @@ async function runMigrations(databaseUrl: string) {
     const migrationClient = postgres(databaseUrl)
 
     try {
+      await migrationClient`CREATE EXTENSION IF NOT EXISTS vector`
       const migrationDb = drizzle(migrationClient)
       await migrate(migrationDb, { migrationsFolder: './drizzle' })
       await migrationClient.end({ timeout: 5 })
@@ -168,7 +169,7 @@ function waitForOpen(ws: WebSocket, timeoutMs = 8_000): Promise<void> {
 
 describe('WebSocket route with real dependencies', () => {
   beforeAll(async () => {
-    postgresContainer = await new GenericContainer('postgres:16-alpine')
+    postgresContainer = await new GenericContainer('pgvector/pgvector:pg18')
       .withEnvironment({
         POSTGRES_DB: 'maid',
         POSTGRES_USER: 'postgres',
@@ -216,7 +217,7 @@ describe('WebSocket route with real dependencies', () => {
       fetch: appModule.default.fetch,
       websocket: appModule.default.websocket,
     })
-  })
+  }, 120_000)
 
   afterAll(async () => {
     if (openSocket && openSocket.readyState === WebSocket.OPEN) {

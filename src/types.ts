@@ -16,6 +16,7 @@ export type BetterAuthSessionResponse = {
 }
 
 export type HandlerDeps = {
+  userId: string
   db: PostgresJsDatabase<typeof schema>
   redis: Redis
 }
