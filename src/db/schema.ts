@@ -16,8 +16,10 @@ export const sessions = pgTable(
   {
     id: serial('id').primaryKey(),
     userId: text('user_id').notNull(),
+
     title: text('title'),
     metadata: jsonb('metadata').default({}),
+
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },

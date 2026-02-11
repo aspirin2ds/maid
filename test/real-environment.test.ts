@@ -1,4 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { drizzle } from 'drizzle-orm/postgres-js'
+import { migrate } from 'drizzle-orm/postgres-js/migrator'
+import postgres from 'postgres'
 import { GenericContainer, Wait } from 'testcontainers'
 
 type AuthRequest = Request & {
@@ -12,6 +15,29 @@ let redisContainer: Awaited<ReturnType<GenericContainer['start']>> | null = null
 let authServer: ReturnType<typeof Bun.serve> | null = null
 let appServer: ReturnType<typeof Bun.serve> | null = null
 let openSocket: WebSocket | null = null
+
+async function runMigrations(databaseUrl: string) {
+  const startedAt = Date.now()
+  const timeoutMs = 10_000
+  let lastError: unknown = null
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const migrationClient = postgres(databaseUrl)
+
+    try {
+      const migrationDb = drizzle(migrationClient)
+      await migrate(migrationDb, { migrationsFolder: './drizzle' })
+      await migrationClient.end({ timeout: 5 })
+      return
+    } catch (error) {
+      lastError = error
+      await migrationClient.end({ timeout: 5 })
+      await Bun.sleep(150)
+    }
+  }
+
+  throw new Error(`Failed to run migrations against test database: ${String(lastError)}`)
+}
 
 function parseJsonMessage(data: string | ArrayBufferLike | Blob | ArrayBufferView) {
   if (typeof data === 'string') {
@@ -138,6 +164,7 @@ describe('WebSocket route with real dependencies', () => {
     process.env.BETTER_AUTH_URL = `http://127.0.0.1:${authServer.port}`
     process.env.AUTH_ORIGIN = `http://127.0.0.1:${authServer.port}`
     process.env.PORT = '0'
+    await runMigrations(process.env.DATABASE_URL)
 
     const appModule = await import('../src/index')
     appServer = Bun.serve({
