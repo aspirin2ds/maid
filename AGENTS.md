@@ -5,7 +5,7 @@
 - `src/index.ts` defines the Hono app and HTTP routes.
 - `src/db/` contains Drizzle DB client and schema definitions.
 - `src/redis/` contains Redis client setup.
-- `test/` contains integration-style tests (currently `real-environment.test.ts`).
+- `test/` contains integration-style tests (currently `websocket-real-env.test.ts`).
 - `drizzle/` stores generated SQL migrations; `drizzle.config.ts` configures migration tooling.
 - `docker/` and `docker-compose.yml` define local infrastructure (Postgres + Redis).
 

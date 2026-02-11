@@ -10,22 +10,13 @@ import Redis from 'ioredis'
 
 import { env } from './env'
 import { getWebsocketHandler } from './maid'
+import type { AppEnv, BetterAuthSessionResponse } from './types'
 
 import * as schema from './db/schema'
 const dbClient = postgres(env.DATABASE_URL)
 const db = drizzle(dbClient, { schema })
 
 const redis = new Redis(env.REDIS_URL, { lazyConnect: true })
-
-type BetterAuthSessionResponse = {
-  user: { id: string }
-}
-
-type AppEnv = {
-  Variables: {
-    userId: string
-  }
-}
 
 const app = new Hono<AppEnv>()
 

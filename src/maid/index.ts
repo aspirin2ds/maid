@@ -1,17 +1,8 @@
 import type { Context } from 'hono'
-import type Redis from 'ioredis'
-import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js'
-
-import type * as schema from '../db/schema'
+import type { AppEnv, HandlerDeps } from '../types'
 
 type WebSocketLike = {
   send: (message: string) => void
-}
-
-type AppEnv = {
-  Variables: {
-    userId: string
-  }
 }
 
 function toTextPayload(data: string | ArrayBufferLike | Blob | ArrayBufferView) {
@@ -28,11 +19,6 @@ function toTextPayload(data: string | ArrayBufferLike | Blob | ArrayBufferView) 
     : new Uint8Array(data)
 
   return new TextDecoder().decode(bytes)
-}
-
-type HandlerDeps = {
-  db: PostgresJsDatabase<typeof schema>
-  redis: Redis
 }
 
 export function getWebsocketHandler({ db, redis }: HandlerDeps) {
