@@ -3,19 +3,19 @@ import type { WSContext, WSEvents } from 'hono/ws'
 import { z } from 'zod'
 
 import { messages, sessions } from '../db/schema'
-import { streamResponse, textGenerate } from '../llm'
+import { streamResponse, generateText } from '../llm'
 import { logger } from '../logger'
 import { createMemoryService, type MemoryService } from '../memory/service'
 import { createSession, loadSession } from '../session'
 import type { Session } from '../session'
 import type { HandlerDeps } from '../types'
 
-const WsMessageSchema = z.object({
+const wsMessageSchema = z.object({
   e: z.enum(['input', 'abort']),
   msg: z.string().optional(),
 })
 
-type IncomingEvent = z.infer<typeof WsMessageSchema>
+type IncomingEvent = z.infer<typeof wsMessageSchema>
 type HistoryRole = 'user' | 'assistant'
 type HistoryItem = { role: HistoryRole, content: string }
 type ContextMessage = { role: string, content: string }
@@ -51,7 +51,7 @@ export class ChatMaid implements WSEvents {
       await this.loadContext()
 
       const prompt = this.buildWelcomePrompt()
-      const welcomeText = await textGenerate(prompt)
+      const welcomeText = await generateText(prompt)
 
       this.send(ws, { type: 'welcome', message: welcomeText })
 
@@ -116,7 +116,7 @@ export class ChatMaid implements WSEvents {
     const raw = typeof event.data === 'string' ? event.data : ''
 
     try {
-      const parsed = WsMessageSchema.safeParse(JSON.parse(raw))
+      const parsed = wsMessageSchema.safeParse(JSON.parse(raw))
       if (!parsed.success) {
         logger.warn({ error: parsed.error.message, raw }, 'chat.message.invalid')
         return null
@@ -154,8 +154,8 @@ export class ChatMaid implements WSEvents {
 
     this.memory = createMemoryService(
       this.deps.userId,
-      this.deps.db,
-      this.deps.redis,
+      this.deps.database,
+      this.deps.redisClient,
       this.deps.enqueueMemoryExtraction,
     )
     return this.memory
@@ -164,10 +164,10 @@ export class ChatMaid implements WSEvents {
   // --- Session loading ---
 
   private async tryResumeSession(ws: WSContext): Promise<Session | null> {
-    const { sessionId, userId, db, redis } = this.deps
+    const { sessionId, userId, database, redisClient } = this.deps
     if (!sessionId) return null
 
-    const session = await loadSession(sessionId, userId, db, redis)
+    const session = await loadSession(sessionId, userId, database, redisClient)
     if (!session) {
       logger.warn({ userId, sessionId }, 'chat.resume.not_found')
       return null
@@ -175,47 +175,47 @@ export class ChatMaid implements WSEvents {
 
     this.sessionPromise = Promise.resolve(session)
 
-    const [msgs, memoryRows] = await Promise.all([
+    const [messageRows, memoryRows] = await Promise.all([
       session.getMessages(),
       this.getMemoryService().list(),
     ])
 
-    this.history = msgs
-      .filter(m => m.role === 'user' || m.role === 'assistant')
-      .map(m => ({ role: m.role as HistoryRole, content: m.content }))
-    this.contextMemories = memoryRows.map((r) => r.content)
+    this.history = messageRows
+      .filter((message) => message.role === 'user' || message.role === 'assistant')
+      .map((message) => ({ role: message.role as HistoryRole, content: message.content }))
+    this.contextMemories = memoryRows.map((memoryRow) => memoryRow.content)
 
     this.send(ws, { type: 'session.resumed', sessionId: session.id })
-    logger.info({ userId, sessionId: session.id, messageCount: msgs.length }, 'chat.resumed')
+    logger.info({ userId, sessionId: session.id, messageCount: messageRows.length }, 'chat.resumed')
     return session
   }
 
   // --- Context loading ---
 
   private async loadContext() {
-    const { db, userId } = this.deps
+    const { database, userId } = this.deps
 
     const [memoryRows, recentSessions] = await Promise.all([
       this.getMemoryService().list(),
-      db.select({ id: sessions.id })
+      database.select({ id: sessions.id })
         .from(sessions)
         .where(eq(sessions.userId, userId))
         .orderBy(desc(sessions.createdAt))
         .limit(1),
     ])
 
-    this.contextMemories = memoryRows.map((r) => r.content)
+    this.contextMemories = memoryRows.map((memoryRow) => memoryRow.content)
 
     if (recentSessions.length > 0) {
       // Keep latest message order for prompts, but limit payload size.
-      const msgRows = await db
+      const messageRows = await database
         .select({ role: messages.role, content: messages.content })
         .from(messages)
         .where(eq(messages.sessionId, recentSessions[0].id))
         .orderBy(desc(messages.createdAt))
         .limit(20)
 
-      this.contextMessages = msgRows.reverse()
+      this.contextMessages = messageRows.reverse()
     }
   }
 
@@ -270,7 +270,7 @@ export class ChatMaid implements WSEvents {
   private async getOrCreateSession(): Promise<{ session: Session, isNew: boolean }> {
     let isNew = !this.sessionPromise
     if (isNew) {
-      this.sessionPromise = createSession(this.deps.userId, this.deps.db, this.deps.redis)
+      this.sessionPromise = createSession(this.deps.userId, this.deps.database, this.deps.redisClient)
     }
 
     try {
@@ -283,7 +283,7 @@ export class ChatMaid implements WSEvents {
       }
 
       isNew = true
-      this.sessionPromise = createSession(this.deps.userId, this.deps.db, this.deps.redis)
+      this.sessionPromise = createSession(this.deps.userId, this.deps.database, this.deps.redisClient)
       try {
         return { session: await this.sessionPromise, isNew }
       } catch (retryError) {

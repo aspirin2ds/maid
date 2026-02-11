@@ -59,7 +59,7 @@ export async function structuredResponse<T extends ZodType>(
       inputTokens: response.prompt_eval_count,
       outputTokens: response.eval_count,
     }, 'llm.completed')
-    return schema.parse(JSON.parse(extractJSON(response.response)))
+    return schema.parse(JSON.parse(extractJson(response.response)))
   } catch (error) {
     logger.error({
       fn: 'structuredResponse',
@@ -71,7 +71,7 @@ export async function structuredResponse<T extends ZodType>(
   }
 }
 
-export async function textGenerate(prompt: string, think: boolean = false): Promise<string> {
+export async function generateText(prompt: string, think: boolean = false): Promise<string> {
   const start = Date.now()
   try {
     const response = await ollama.generate({
@@ -81,7 +81,7 @@ export async function textGenerate(prompt: string, think: boolean = false): Prom
       keep_alive: "-1m",
     })
     logger.info({
-      fn: 'textGenerate',
+      fn: 'generateText',
       model: env.OLLAMA_GENERATE_MODEL,
       durationMs: Date.now() - start,
       inputTokens: response.prompt_eval_count,
@@ -90,7 +90,7 @@ export async function textGenerate(prompt: string, think: boolean = false): Prom
     return response.response.trim()
   } catch (error) {
     logger.error({
-      fn: 'textGenerate',
+      fn: 'generateText',
       model: env.OLLAMA_GENERATE_MODEL,
       durationMs: Date.now() - start,
       error: error instanceof Error ? error.message : String(error),
@@ -99,7 +99,7 @@ export async function textGenerate(prompt: string, think: boolean = false): Prom
   }
 }
 
-function extractJSON(raw: string): string {
+function extractJson(raw: string): string {
   const fenced = raw.match(/```(?:json)?\s*\n?([\s\S]*?)```/)
   if (fenced) return fenced[1].trim()
   const braces = raw.match(/[\[{][\s\S]*[\]}]/)
@@ -107,14 +107,14 @@ function extractJSON(raw: string): string {
   return raw.trim()
 }
 
-export async function embed(input: string | string[]) {
+export async function generateEmbeddings(input: string | string[]) {
   const start = Date.now()
   try {
     const response = await ollama.embed({
       model: env.OLLAMA_EMBEDDING_MODEL, input, keep_alive: "-1m"
     })
     logger.info({
-      fn: 'getEmbeddings',
+      fn: 'generateEmbeddings',
       model: env.OLLAMA_EMBEDDING_MODEL,
       durationMs: Date.now() - start,
       inputCount: input.length,
@@ -122,7 +122,7 @@ export async function embed(input: string | string[]) {
     return response.embeddings
   } catch (error) {
     logger.error({
-      fn: 'embed',
+      fn: 'generateEmbeddings',
       model: env.OLLAMA_EMBEDDING_MODEL,
       durationMs: Date.now() - start,
       error: error instanceof Error ? error.message : String(error),

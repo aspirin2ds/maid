@@ -14,13 +14,13 @@ type StreamLike = {
   abort: () => void
 }
 
-let textGenerateImpl: (prompt: string) => Promise<string> = async () => 'Welcome!'
+let generateTextImpl: (prompt: string) => Promise<string> = async () => 'Welcome!'
 let streamResponseImpl: (input: string, instructions?: string) => StreamLike = () => createStream()
 const loadSessionOverrides = new Map<string, MockSession | null>()
 const createSessionOverrides = new Map<string, () => Promise<MockSession>>()
 
 mock.module('../../src/llm', () => ({
-  textGenerate: (prompt: string) => textGenerateImpl(prompt),
+  generateText: (prompt: string) => generateTextImpl(prompt),
   streamResponse: (input: string, instructions?: string) => streamResponseImpl(input, instructions),
 }))
 
@@ -160,7 +160,7 @@ function abortMessage(): MessageEvent {
 }
 
 beforeEach(() => {
-  textGenerateImpl = async () => 'Welcome!'
+  generateTextImpl = async () => 'Welcome!'
   streamResponseImpl = () => createStream()
 })
 
@@ -179,8 +179,8 @@ describe('ChatMaid onOpen', () => {
     const maid = new ChatMaid({
       userId: 'u1',
       sessionId: 42,
-      db: createMockDb([]) as any,
-      redis: createMockRedis() as any,
+      database: createMockDb([]) as any,
+      redisClient: createMockRedis() as any,
       memory: createMockMemoryService({
         listRows: [{ content: 'prefers tea' }],
       }) as any,
@@ -199,21 +199,21 @@ describe('ChatMaid onOpen', () => {
 
   test('loads context and sends generated welcome message for a new session', async () => {
     let prompt = ''
-    textGenerateImpl = async (value) => {
+    generateTextImpl = async (value) => {
       prompt = value
       return 'Welcome from model'
     }
 
     const maid = new ChatMaid({
       userId: 'u2',
-      db: createMockDb([
+      database: createMockDb([
         [{ id: 7 }],
         [
           { role: 'assistant', content: 'latest' },
           { role: 'user', content: 'older' },
         ],
       ]) as any,
-      redis: createMockRedis() as any,
+      redisClient: createMockRedis() as any,
       memory: createMockMemoryService({
         listRows: [{ content: 'loves jazz' }],
       }) as any,
@@ -231,14 +231,14 @@ describe('ChatMaid onOpen', () => {
   })
 
   test('falls back to default welcome when open flow throws', async () => {
-    textGenerateImpl = async () => {
+    generateTextImpl = async () => {
       throw new Error('llm down')
     }
 
     const maid = new ChatMaid({
       userId: 'u3',
-      db: createMockDb([[]]) as any,
-      redis: createMockRedis() as any,
+      database: createMockDb([[]]) as any,
+      redisClient: createMockRedis() as any,
       memory: createMockMemoryService() as any,
     })
     const ws = createMockWs()
@@ -256,8 +256,8 @@ describe('ChatMaid onMessage validation and control', () => {
   test('returns invalid format for invalid JSON', async () => {
     const maid = new ChatMaid({
       userId: 'u4',
-      db: createMockDb([]) as any,
-      redis: createMockRedis() as any,
+      database: createMockDb([]) as any,
+      redisClient: createMockRedis() as any,
       memory: createMockMemoryService() as any,
     })
     const ws = createMockWs()
@@ -270,8 +270,8 @@ describe('ChatMaid onMessage validation and control', () => {
   test('returns invalid format for schema mismatch', async () => {
     const maid = new ChatMaid({
       userId: 'u5',
-      db: createMockDb([]) as any,
-      redis: createMockRedis() as any,
+      database: createMockDb([]) as any,
+      redisClient: createMockRedis() as any,
       memory: createMockMemoryService() as any,
     })
     const ws = createMockWs()
@@ -287,8 +287,8 @@ describe('ChatMaid onMessage validation and control', () => {
   test('returns empty input for blank message', async () => {
     const maid = new ChatMaid({
       userId: 'u6',
-      db: createMockDb([]) as any,
-      redis: createMockRedis() as any,
+      database: createMockDb([]) as any,
+      redisClient: createMockRedis() as any,
       memory: createMockMemoryService() as any,
     })
     const ws = createMockWs()
@@ -302,8 +302,8 @@ describe('ChatMaid onMessage validation and control', () => {
     let aborted = false
     const maid = new ChatMaid({
       userId: 'u7',
-      db: createMockDb([]) as any,
-      redis: createMockRedis() as any,
+      database: createMockDb([]) as any,
+      redisClient: createMockRedis() as any,
       memory: createMockMemoryService() as any,
     })
     ;(maid as any).currentStream = {
@@ -342,8 +342,8 @@ describe('ChatMaid streaming and queue behavior', () => {
 
     const maid = new ChatMaid({
       userId: 'u8',
-      db: createMockDb([]) as any,
-      redis: createMockRedis() as any,
+      database: createMockDb([]) as any,
+      redisClient: createMockRedis() as any,
       memory: createMockMemoryService({
         onEnqueue: () => {
           memoryJobs.push(1)
@@ -381,8 +381,8 @@ describe('ChatMaid streaming and queue behavior', () => {
 
     const maid = new ChatMaid({
       userId: 'u9',
-      db: createMockDb([]) as any,
-      redis: createMockRedis() as any,
+      database: createMockDb([]) as any,
+      redisClient: createMockRedis() as any,
       memory: createMockMemoryService() as any,
     })
     const ws = createMockWs()
@@ -401,8 +401,8 @@ describe('ChatMaid streaming and queue behavior', () => {
 
     const maid = new ChatMaid({
       userId: 'u10',
-      db: createMockDb([]) as any,
-      redis: createMockRedis() as any,
+      database: createMockDb([]) as any,
+      redisClient: createMockRedis() as any,
       memory: createMockMemoryService() as any,
     })
     const ws = createMockWs()
@@ -423,8 +423,8 @@ describe('ChatMaid streaming and queue behavior', () => {
 
     const maid = new ChatMaid({
       userId: 'u11',
-      db: createMockDb([]) as any,
-      redis: createMockRedis() as any,
+      database: createMockDb([]) as any,
+      redisClient: createMockRedis() as any,
       memory: createMockMemoryService() as any,
     })
     const ws = createMockWs()
@@ -442,8 +442,8 @@ describe('ChatMaid lifecycle cleanup', () => {
     let aborts = 0
     const maid = new ChatMaid({
       userId: 'u12',
-      db: createMockDb([]) as any,
-      redis: createMockRedis() as any,
+      database: createMockDb([]) as any,
+      redisClient: createMockRedis() as any,
       memory: createMockMemoryService() as any,
     })
 

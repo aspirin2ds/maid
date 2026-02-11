@@ -5,7 +5,7 @@ import { GenericContainer, Wait } from 'testcontainers'
 const extractionCalls: string[] = []
 
 mock.module('../../src/memory/extraction', () => ({
-  extractMemory: async (_db: unknown, userId: string) => {
+  extractMemory: async (_database: unknown, userId: string) => {
     extractionCalls.push(userId)
     return {
       factsExtracted: 0,
@@ -20,7 +20,7 @@ mock.module('../../src/memory/extraction', () => ({
 import { createMemoryExtractionQueue } from '../../src/memory/queue'
 
 let redisContainer: Awaited<ReturnType<GenericContainer['start']>> | null = null
-let redis: Redis | null = null
+let redisClient: Redis | null = null
 
 async function waitForCondition(
   condition: () => boolean,
@@ -42,7 +42,7 @@ describe('memory queue debounce', () => {
       .withWaitStrategy(Wait.forLogMessage('Ready to accept connections'))
       .start()
 
-    redis = new Redis({
+    redisClient = new Redis({
       host: redisContainer.getHost(),
       port: redisContainer.getMappedPort(6379),
       lazyConnect: true,
@@ -50,9 +50,9 @@ describe('memory queue debounce', () => {
   }, 120_000)
 
   afterAll(async () => {
-    if (redis) {
-      redis.disconnect()
-      redis = null
+    if (redisClient) {
+      redisClient.disconnect()
+      redisClient = null
     }
 
     if (redisContainer) {
@@ -68,9 +68,9 @@ describe('memory queue debounce', () => {
   test(
     'debounces duplicate extraction jobs for the same user',
     async () => {
-      if (!redis) throw new Error('Redis client was not initialized')
+      if (!redisClient) throw new Error('Redis client was not initialized')
 
-      const queue = createMemoryExtractionQueue(redis, {} as any)
+      const queue = createMemoryExtractionQueue(redisClient, {} as any)
       const userId = 'debounce-user'
 
       try {

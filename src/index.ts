@@ -14,32 +14,32 @@ import { createMemoryExtractionQueue } from './memory/queue'
 import type { AppEnv, BetterAuthSessionResponse } from './types'
 
 import * as schema from './db/schema'
-const dbClient = postgres(env.DATABASE_URL)
-const db = drizzle(dbClient, { schema })
+const databaseClient = postgres(env.DATABASE_URL)
+const database = drizzle(databaseClient, { schema })
 
-const redis = new Redis(env.REDIS_URL, { lazyConnect: true })
-const memoryExtractionQueue = createMemoryExtractionQueue(redis, db)
+const redisClient = new Redis(env.REDIS_URL, { lazyConnect: true })
+const memoryExtractionQueue = createMemoryExtractionQueue(redisClient, database)
 
 const app = new Hono<AppEnv>()
 let isShuttingDown = false
 
-const unauthorized = (c: Context<AppEnv>) => {
-  c.header('WWW-Authenticate', 'Bearer')
-  return c.json({ error: 'Unauthorized' }, 401)
+const unauthorized = (context: Context<AppEnv>) => {
+  context.header('WWW-Authenticate', 'Bearer')
+  return context.json({ error: 'Unauthorized' }, 401)
 }
 
-const authUnavailable = (c: Context<AppEnv>) => {
-  return c.json({ error: 'Auth service unavailable' }, 503)
+const authUnavailable = (context: Context<AppEnv>) => {
+  return context.json({ error: 'Auth service unavailable' }, 503)
 }
 
-function getAuthorizationHeader(c: Context<AppEnv>) {
-  const header = c.req.header('authorization')
+function getAuthorizationHeader(context: Context<AppEnv>) {
+  const header = context.req.header('authorization')
   if (header?.startsWith('Bearer ')) {
     return header
   }
 
   // Browsers cannot set custom websocket headers, so allow token via query for /stream.
-  const token = c.req.query('token')
+  const token = context.req.query('token')
   if (!token) {
     return null
   }
@@ -72,13 +72,13 @@ const requireSession = createMiddleware(async (c, next) => {
     return authUnavailable(c)
   }
 
-  const data = (await response.json()) as BetterAuthSessionResponse | null
+  const sessionData = (await response.json()) as BetterAuthSessionResponse | null
 
-  if (!data?.user?.id) {
+  if (!sessionData?.user?.id) {
     return unauthorized(c)
   }
 
-  c.set('userId', data.user.id)
+  c.set('userId', sessionData.user.id)
   await next()
 })
 
@@ -91,8 +91,8 @@ app.get(
     const maid = getMaid(c.req.param('maid'), {
       userId,
       sessionId: sessionId ? Number(sessionId) : undefined,
-      db,
-      redis,
+      database,
+      redisClient,
       enqueueMemoryExtraction: memoryExtractionQueue.enqueueMemoryExtraction,
     })
     if (!maid) {
@@ -104,20 +104,20 @@ app.get(
 
 app.get('/', (c) => c.text('Hello, Maid!'))
 
-app.get('/db/health', async (c) => {
-  const result = await db.execute<{ ok: number }>(sql`select 1 as ok`)
+app.get('/db/health', async (context) => {
+  const result = await database.execute<{ ok: number }>(sql`select 1 as ok`)
   const ok = result[0]?.ok === 1
 
-  return c.json({ ok })
+  return context.json({ ok })
 })
 
-app.get('/redis/health', async (c) => c.json({ ok: (await redis.ping()) === 'PONG' }))
+app.get('/redis/health', async (context) => context.json({ ok: (await redisClient.ping()) === 'PONG' }))
 
 async function closeResources() {
   const results = await Promise.allSettled([
     memoryExtractionQueue.close(),
-    redis.quit(),
-    dbClient.end({ timeout: 5 }),
+    redisClient.quit(),
+    databaseClient.end({ timeout: 5 }),
   ])
 
   const rejected = results.filter((result) => result.status === 'rejected')

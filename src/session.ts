@@ -8,7 +8,7 @@ import { sessions, messages } from './db/schema'
 type SessionRow = typeof sessions.$inferSelect
 type MessageRow = typeof messages.$inferSelect
 type MessageRole = (typeof schema.messageRoleEnum.enumValues)[number]
-type Db = PostgresJsDatabase<typeof schema>
+type Database = PostgresJsDatabase<typeof schema>
 
 export type Session = {
   id: number
@@ -20,7 +20,7 @@ export type Session = {
   getMessages(): Promise<MessageRow[]>
 }
 
-function buildSession(row: SessionRow, userId: string, db: Db): Session {
+function buildSession(row: SessionRow, userId: string, database: Database): Session {
   const sessionId = row.id
 
   return {
@@ -29,7 +29,7 @@ function buildSession(row: SessionRow, userId: string, db: Db): Session {
     row,
 
     async update(data) {
-      const [updated] = await db
+      const [updated] = await database
         .update(sessions)
         .set({ ...data, updatedAt: new Date() })
         .where(and(eq(sessions.id, sessionId), eq(sessions.userId, userId)))
@@ -38,13 +38,13 @@ function buildSession(row: SessionRow, userId: string, db: Db): Session {
     },
 
     async delete() {
-      await db
+      await database
         .delete(sessions)
         .where(and(eq(sessions.id, sessionId), eq(sessions.userId, userId)))
     },
 
     async addMessage(role, content, metadata?) {
-      const [message] = await db
+      const [message] = await database
         .insert(messages)
         .values({ sessionId, role, content, metadata })
         .returning()
@@ -52,7 +52,7 @@ function buildSession(row: SessionRow, userId: string, db: Db): Session {
     },
 
     async getMessages() {
-      return db
+      return database
         .select()
         .from(messages)
         .where(eq(messages.sessionId, sessionId))
@@ -64,10 +64,10 @@ function buildSession(row: SessionRow, userId: string, db: Db): Session {
 export async function loadSession(
   sessionId: number,
   userId: string,
-  db: Db,
+  database: Database,
   _redis: Redis,
 ): Promise<Session | null> {
-  const [row] = await db
+  const [row] = await database
     .select()
     .from(sessions)
     .where(and(eq(sessions.id, sessionId), eq(sessions.userId, userId)))
@@ -75,19 +75,19 @@ export async function loadSession(
 
   if (!row) return null
 
-  return buildSession(row, userId, db)
+  return buildSession(row, userId, database)
 }
 
 export async function createSession(
   userId: string,
-  db: Db,
-  redis: Redis,
+  database: Database,
+  _redis: Redis,
   title?: string,
 ): Promise<Session> {
-  const [row] = await db
+  const [row] = await database
     .insert(sessions)
     .values({ userId, title })
     .returning()
 
-  return buildSession(row, userId, db)
+  return buildSession(row, userId, database)
 }

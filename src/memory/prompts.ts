@@ -1,12 +1,12 @@
 import { z } from 'zod'
 
-export const FactRetrievalSchema = z.object({
+export const factRetrievalSchema = z.object({
   facts: z
     .array(z.string())
     .describe('An array of distinct facts extracted from the conversation.'),
 })
 
-const MemoryUpdateItemSchema = z.object({
+const memoryUpdateItemSchema = z.object({
   id: z.string().describe('The unique identifier of the memory item.'),
   text: z.string().describe('The content of the memory item.'),
   event: z
@@ -20,13 +20,13 @@ const MemoryUpdateItemSchema = z.object({
     .describe('The previous content of the memory item if the event was UPDATE.'),
 })
 
-export const MemoryUpdateSchema = z.object({
+export const memoryUpdateSchema = z.object({
   memory: z
-    .array(MemoryUpdateItemSchema)
+    .array(memoryUpdateItemSchema)
     .describe('An array representing the state of memory items after processing new facts.'),
 })
 
-export type MemoryAction = z.infer<typeof MemoryUpdateItemSchema>
+export type MemoryAction = z.infer<typeof memoryUpdateItemSchema>
 
 export function getFactRetrievalPrompt(conversationText: string): string {
   return `You are a Personal Information Organizer, specialized in accurately storing facts, user memories, and preferences. Your primary role is to extract relevant pieces of information from conversations and organize them into distinct, manageable facts.
@@ -45,22 +45,31 @@ Types of Information to Remember:
 Here are some few shot examples:
 
 Input: Hi.
-Output: {"facts" : []}
+Output:
+NONE
 
 Input: The sky is blue and the grass is green.
-Output: {"facts" : ["Sky is blue", "Grass is green"]}
+Output:
+FACT: Sky is blue
+FACT: Grass is green
 
 Input: Hi, I am looking for a restaurant in San Francisco.
-Output: {"facts" : ["Looking for a restaurant in San Francisco"]}
+Output:
+FACT: Looking for a restaurant in San Francisco
 
 Input: Yesterday, I had a meeting with John at 3pm. We discussed the new project.
-Output: {"facts" : ["Had a meeting with John at 3pm", "Discussed the new project"]}
+Output:
+FACT: Had a meeting with John at 3pm
+FACT: Discussed the new project
 
 Input: Hi, my name is John. I am a software engineer.
-Output: {"facts" : ["Name is John", "Is a Software engineer"]}
+Output:
+FACT: Name is John
+FACT: Is a software engineer
 
 Input: Me favourite movies are Inception and Interstellar.
-Output: {"facts" : ["Favourite movies are Inception and Interstellar"]}
+Output:
+FACT: Favourite movies are Inception and Interstellar
 
 Return the extracted facts as plain text lines only.
 Use this exact output format:

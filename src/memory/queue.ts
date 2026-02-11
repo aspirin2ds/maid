@@ -20,7 +20,7 @@ const DEFAULT_JOB_OPTIONS: JobsOptions = {
   removeOnFail: 500,
 }
 
-type Db = PostgresJsDatabase<typeof schema>
+type Database = PostgresJsDatabase<typeof schema>
 
 export type MemoryExtractionJobData = {
   userId: string
@@ -33,18 +33,18 @@ export type MemoryExtractionQueue = {
   close: () => Promise<void>
 }
 
-export function createMemoryExtractionQueue(redis: Redis, db: Db): MemoryExtractionQueue {
+export function createMemoryExtractionQueue(redisClient: Redis, database: Database): MemoryExtractionQueue {
   // Producer should fail fast if Redis is unavailable.
-  const producerConnection = redis.duplicate({
+  const producerConnection = redisClient.duplicate({
     enableOfflineQueue: false,
     maxRetriesPerRequest: 1,
   })
 
   // Workers should keep waiting and reconnecting as needed.
-  const workerConnection = redis.duplicate({
+  const workerConnection = redisClient.duplicate({
     maxRetriesPerRequest: null,
   })
-  const eventsConnection = redis.duplicate({
+  const eventsConnection = redisClient.duplicate({
     maxRetriesPerRequest: null,
   })
 
@@ -56,7 +56,7 @@ export function createMemoryExtractionQueue(redis: Redis, db: Db): MemoryExtract
     MEMORY_EXTRACTION_QUEUE,
     async (job) => {
       const { userId } = job.data
-      const result = await extractMemory(db, userId)
+      const result = await extractMemory(database, userId)
 
       logger.info({
         userId,

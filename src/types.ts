@@ -20,8 +20,8 @@ export type BetterAuthSessionResponse = {
 export type HandlerDeps = {
   userId: string
   sessionId?: number
-  db: PostgresJsDatabase<typeof schema>
-  redis: Redis
+  database: PostgresJsDatabase<typeof schema>
+  redisClient: Redis
   memory?: MemoryService
   enqueueMemoryExtraction?: MemoryExtractionEnqueuer
 }

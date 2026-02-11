@@ -8,8 +8,8 @@ import type { ExtractionResult } from './extraction'
 import { extractMemory } from './extraction'
 import type { MemoryExtractionEnqueuer } from './queue'
 
-type Db = PostgresJsDatabase<typeof schema>
 type MemoryRow = typeof memories.$inferSelect
+type Database = PostgresJsDatabase<typeof schema>
 
 export type MemoryCreateData = {
   content: string
@@ -40,7 +40,7 @@ export type MemoryService = {
   enqueueExtraction(): Promise<void>
 }
 
-function buildMemory(row: MemoryRow, userId: string, db: Db): Memory {
+function buildMemory(row: MemoryRow, userId: string, database: Database): Memory {
   const memoryId = row.id
 
   return {
@@ -59,7 +59,7 @@ function buildMemory(row: MemoryRow, userId: string, db: Db): Memory {
         changes.embedding = (data.embedding === null ? null : toSqlVector(data.embedding)) as any
       }
 
-      const [updated] = await db
+      const [updated] = await database
         .update(memories)
         .set(changes)
         .where(and(eq(memories.id, memoryId), eq(memories.userId, userId)))
@@ -69,7 +69,7 @@ function buildMemory(row: MemoryRow, userId: string, db: Db): Memory {
     },
 
     async delete() {
-      await db
+      await database
         .delete(memories)
         .where(and(eq(memories.id, memoryId), eq(memories.userId, userId)))
     },
@@ -79,10 +79,10 @@ function buildMemory(row: MemoryRow, userId: string, db: Db): Memory {
 export async function loadMemory(
   memoryId: number,
   userId: string,
-  db: Db,
+  database: Database,
   _redis: Redis,
 ): Promise<Memory | null> {
-  const [row] = await db
+  const [row] = await database
     .select()
     .from(memories)
     .where(and(eq(memories.id, memoryId), eq(memories.userId, userId)))
@@ -90,16 +90,16 @@ export async function loadMemory(
 
   if (!row) return null
 
-  return buildMemory(row, userId, db)
+  return buildMemory(row, userId, database)
 }
 
 export async function createMemory(
   userId: string,
-  db: Db,
+  database: Database,
   _redis: Redis,
   data: MemoryCreateData,
 ): Promise<Memory> {
-  const [row] = await db
+  const [row] = await database
     .insert(memories)
     .values({
       userId,
@@ -109,32 +109,32 @@ export async function createMemory(
     })
     .returning()
 
-  return buildMemory(row, userId, db)
+  return buildMemory(row, userId, database)
 }
 
 export function createMemoryService(
   userId: string,
-  db: Db,
-  redis: Redis,
+  database: Database,
+  redisClient: Redis,
   enqueueMemoryExtraction?: MemoryExtractionEnqueuer,
 ): MemoryService {
   return {
     userId,
     create(data) {
-      return createMemory(userId, db, redis, data)
+      return createMemory(userId, database, redisClient, data)
     },
     load(memoryId) {
-      return loadMemory(memoryId, userId, db, redis)
+      return loadMemory(memoryId, userId, database, redisClient)
     },
     list() {
-      return db
+      return database
         .select()
         .from(memories)
         .where(eq(memories.userId, userId))
         .orderBy(desc(memories.createdAt))
     },
     extractNow() {
-      return extractMemory(db, userId)
+      return extractMemory(database, userId)
     },
     async enqueueExtraction() {
       if (!enqueueMemoryExtraction) return

@@ -22,8 +22,8 @@ let authServer: ReturnType<typeof Bun.serve> | null = null
 let appServer: ReturnType<typeof Bun.serve> | null = null
 const openSockets: WebSocket[] = []
 let appClose: (() => Promise<void>) | null = null
-let dbClient: ReturnType<typeof postgres> | null = null
-let db: ReturnType<typeof drizzle<typeof schema>> | null = null
+let databaseClient: ReturnType<typeof postgres> | null = null
+let database: ReturnType<typeof drizzle<typeof schema>> | null = null
 
 async function runMigrations(databaseUrl: string) {
   const startedAt = Date.now()
@@ -255,8 +255,8 @@ describe('WebSocket route with real dependencies', () => {
     process.env.AUTH_ORIGIN = `http://127.0.0.1:${authServer.port}`
     process.env.PORT = '0'
     await runMigrations(process.env.DATABASE_URL)
-    dbClient = postgres(process.env.DATABASE_URL)
-    db = drizzle(dbClient, { schema })
+    databaseClient = postgres(process.env.DATABASE_URL)
+    database = drizzle(databaseClient, { schema })
 
     const appModule = await import('../../src/index')
     appClose = typeof appModule.default.close === 'function' ? appModule.default.close : null
@@ -278,9 +278,9 @@ describe('WebSocket route with real dependencies', () => {
       appClose = null
     }
     authServer?.stop(true)
-    if (dbClient) {
-      await dbClient.end({ timeout: 5 })
-      dbClient = null
+    if (databaseClient) {
+      await databaseClient.end({ timeout: 5 })
+      databaseClient = null
     }
 
     if (redisContainer) {
@@ -316,14 +316,14 @@ describe('WebSocket route with real dependencies', () => {
   test(
     'supports multi-turn conversation, session resume, and background memory extraction',
     async () => {
-      if (!appServer || !db) {
+      if (!appServer || !database) {
         throw new Error('App server was not started')
       }
-      const testDb = db
+      const testDatabase = database
 
-      await testDb.delete(memories).where(eq(memories.userId, USER_ID))
-      await testDb.delete(messages)
-      await testDb.delete(sessions).where(eq(sessions.userId, USER_ID))
+      await testDatabase.delete(memories).where(eq(memories.userId, USER_ID))
+      await testDatabase.delete(messages)
+      await testDatabase.delete(sessions).where(eq(sessions.userId, USER_ID))
 
       const wsUrl = `ws://127.0.0.1:${appServer.port}/stream/chat?token=${AUTH_TOKEN}`
       const ws = trackSocket(new WebSocket(wsUrl))
@@ -333,25 +333,25 @@ describe('WebSocket route with real dependencies', () => {
       expect(welcome.type).toBe('welcome')
 
       ws.send(JSON.stringify({ e: 'input', msg: 'My name is Alex. I like ramen and I run every morning.' }))
-      const firstTurn = await waitForMessages(ws, (msg) => msg.type === 'text.done')
+      const firstTurn = await waitForMessages(ws, (message) => message.type === 'text.done')
 
-      const created = firstTurn.find((m) => m.type === 'session.created')
+      const created = firstTurn.find((message) => message.type === 'session.created')
       expect(created).toBeDefined()
       const sessionId = Number(created?.sessionId)
       expect(Number.isFinite(sessionId)).toBe(true)
 
-      const deltas = firstTurn.filter((m) => m.type === 'text.delta')
+      const deltas = firstTurn.filter((message) => message.type === 'text.delta')
       expect(deltas.length).toBeGreaterThan(0)
       expect(firstTurn[firstTurn.length - 1]).toEqual({ type: 'text.done' })
 
       ws.send(JSON.stringify({ e: 'input', msg: 'Plan a high-protein dinner idea and keep my preferences in mind.' }))
-      const secondTurn = await waitForMessages(ws, (msg) => msg.type === 'text.done')
-      expect(secondTurn.some((m) => m.type === 'session.created')).toBe(false)
+      const secondTurn = await waitForMessages(ws, (message) => message.type === 'text.done')
+      expect(secondTurn.some((message) => message.type === 'session.created')).toBe(false)
 
       await closeSocket(ws)
 
       await waitForCondition(async () => {
-        const sessionRows = await testDb.select({ id: sessions.id }).from(sessions).where(eq(sessions.userId, USER_ID))
+        const sessionRows = await testDatabase.select({ id: sessions.id }).from(sessions).where(eq(sessions.userId, USER_ID))
         return sessionRows.length === 1
       })
 
@@ -363,11 +363,11 @@ describe('WebSocket route with real dependencies', () => {
       expect(resumed.sessionId).toBe(sessionId)
 
       resumedWs.send(JSON.stringify({ e: 'input', msg: 'What exercise schedule did I mention?' }))
-      const resumedTurn = await waitForMessages(resumedWs, (msg) => msg.type === 'text.done')
-      expect(resumedTurn.filter((m) => m.type === 'text.delta').length).toBeGreaterThan(0)
+      const resumedTurn = await waitForMessages(resumedWs, (message) => message.type === 'text.done')
+      expect(resumedTurn.filter((message) => message.type === 'text.delta').length).toBeGreaterThan(0)
 
       await waitForCondition(async () => {
-        const persistedMessages = await testDb
+        const persistedMessages = await testDatabase
           .select({
             role: messages.role,
             content: messages.content,
@@ -379,21 +379,21 @@ describe('WebSocket route with real dependencies', () => {
       })
 
       await waitForCondition(async () => {
-        const persistedMessages = await testDb
+        const persistedMessages = await testDatabase
           .select({ extractedAt: messages.extractedAt })
           .from(messages)
           .where(eq(messages.sessionId, sessionId))
         if (persistedMessages.length < 6) return false
         if (!persistedMessages.every((row) => row.extractedAt !== null)) return false
 
-        const memoryRows = await testDb
+        const memoryRows = await testDatabase
           .select({ content: memories.content })
           .from(memories)
           .where(eq(memories.userId, USER_ID))
         return memoryRows.length > 0
       })
 
-      const sessionMessages = await testDb
+      const sessionMessages = await testDatabase
         .select({
           role: messages.role,
           content: messages.content,
@@ -407,7 +407,7 @@ describe('WebSocket route with real dependencies', () => {
       expect(sessionMessages.map((row) => row.role).filter((r) => r === 'user').length).toBe(3)
       expect(sessionMessages.map((row) => row.role).filter((r) => r === 'assistant').length).toBe(3)
 
-      const memoryRows = await testDb
+      const memoryRows = await testDatabase
         .select({ content: memories.content })
         .from(memories)
         .where(eq(memories.userId, USER_ID))
