@@ -91,8 +91,10 @@ app.get(
     const maid = getMaid(c.req.param('maid'), {
       userId,
       sessionId: sessionId ? Number(sessionId) : undefined,
+
       database,
       redisClient,
+
       enqueueMemoryExtraction: memoryExtractionQueue.enqueueMemoryExtraction,
     })
     if (!maid) {

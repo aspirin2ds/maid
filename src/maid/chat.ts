@@ -1,12 +1,17 @@
-import { desc, eq } from 'drizzle-orm'
 import type { WSContext, WSEvents } from 'hono/ws'
 import { z } from 'zod'
 
-import { messages, sessions } from '../db/schema'
+import {
+  ChatUserMessageInputSchema,
+  buildInstructions,
+  buildWelcomePrompt,
+  type ChatUserMessageInput,
+  type PromptHistoryItem,
+  type PromptMessage,
+} from './core'
+import { ChatService } from './service'
 import { streamResponse, generateText } from '../llm'
 import { logger } from '../logger'
-import { createMemoryService, type MemoryService } from '../memory/service'
-import { createSession, loadSession } from '../session'
 import type { Session } from '../session'
 import type { HandlerDeps } from '../types'
 
@@ -16,32 +21,25 @@ const wsMessageSchema = z.object({
 })
 
 type IncomingEvent = z.infer<typeof wsMessageSchema>
-type HistoryRole = 'user' | 'assistant'
-type HistoryItem = { role: HistoryRole, content: string }
-type ContextMessage = { role: string, content: string }
-
 export class ChatMaid implements WSEvents {
   private deps: HandlerDeps
-  // Session is lazily created on first user input and reused for the WS lifetime.
-  private sessionPromise: Promise<Session> | null = null
+  private chatService: ChatService
   // Tracks the active streaming response so abort/cleanup can cancel it.
   private currentStream: ReturnType<typeof streamResponse> | null = null
   // In-memory conversation for prompt construction during this socket session.
-  private history: HistoryItem[] = []
+  private history: PromptHistoryItem[] = []
   private contextMemories: string[] = []
-  private contextMessages: ContextMessage[] = []
-  private memory: MemoryService | null = null
+  private contextMessages: PromptMessage[] = []
   // Serializes inputs so overlapping messages do not race session/message writes.
   private processingPromise: Promise<void> = Promise.resolve()
 
   constructor(deps: HandlerDeps) {
     this.deps = deps
+    this.chatService = ChatService.fromHandlerDeps(deps)
   }
 
   async onOpen(_event: Event, ws: WSContext) {
     try {
-      this.getMemoryService()
-
       // If client reconnects with a session id, restore that conversation first.
       if (await this.tryResumeSession(ws)) {
         return
@@ -82,7 +80,7 @@ export class ChatMaid implements WSEvents {
         return
       }
 
-      const input = incoming.msg?.trim()
+      const input = this.parseUserMessageInput(incoming.msg)
       if (!input) {
         this.send(ws, { type: 'error', message: 'Empty input' })
         return
@@ -132,117 +130,67 @@ export class ChatMaid implements WSEvents {
     return error instanceof Error && error.name === 'APIUserAbortError'
   }
 
-  private appendSection(parts: string[], title: string, body: string) {
-    if (!body) return
-    parts.push(`# ${title}\n${body}`)
-  }
-
-  private formatConversation(items: Array<{ role: string, content: string }>): string {
-    return items.map(item => `${item.role}: ${item.content}`).join('\n')
-  }
-
-  private formatMemoryBullets(items: string[]): string {
-    return items.map(item => `- ${item}`).join('\n')
-  }
-
-  private getMemoryService(): MemoryService {
-    if (this.memory) return this.memory
-    if (this.deps.memory) {
-      this.memory = this.deps.memory
-      return this.memory
+  private parseUserMessageInput(rawMessage: unknown): ChatUserMessageInput | null {
+    const parsed = ChatUserMessageInputSchema.safeParse({ message: rawMessage ?? '' })
+    if (!parsed.success) {
+      logger.warn({ error: parsed.error.message, rawMessage }, 'chat.message.invalid_input')
+      return null
     }
-
-    this.memory = createMemoryService(
-      this.deps.userId,
-      this.deps.database,
-      this.deps.redisClient,
-      this.deps.enqueueMemoryExtraction,
-    )
-    return this.memory
+    return parsed.data
   }
 
   // --- Session loading ---
 
-  private async tryResumeSession(ws: WSContext): Promise<Session | null> {
-    const { sessionId, userId, database, redisClient } = this.deps
-    if (!sessionId) return null
-
-    const session = await loadSession(sessionId, userId, database, redisClient)
-    if (!session) {
-      logger.warn({ userId, sessionId }, 'chat.resume.not_found')
-      return null
+  private async tryResumeSession(ws: WSContext): Promise<boolean> {
+    const resumed = await this.chatService.tryResumeSession()
+    if (!resumed) {
+      if (this.deps.sessionId) {
+        logger.warn({ userId: this.deps.userId, sessionId: this.deps.sessionId }, 'chat.resume.not_found')
+      }
+      return false
     }
 
-    this.sessionPromise = Promise.resolve(session)
+    this.history = resumed.history
+    this.contextMemories = resumed.memories
 
-    const [messageRows, memoryRows] = await Promise.all([
-      session.getMessages(),
-      this.getMemoryService().list(),
-    ])
-
-    this.history = messageRows
-      .filter((message) => message.role === 'user' || message.role === 'assistant')
-      .map((message) => ({ role: message.role as HistoryRole, content: message.content }))
-    this.contextMemories = memoryRows.map((memoryRow) => memoryRow.content)
-
-    this.send(ws, { type: 'session.resumed', sessionId: session.id })
-    logger.info({ userId, sessionId: session.id, messageCount: messageRows.length }, 'chat.resumed')
-    return session
+    this.send(ws, { type: 'session.resumed', sessionId: resumed.session.id })
+    logger.info({
+      userId: this.deps.userId,
+      sessionId: resumed.session.id,
+      messageCount: resumed.history.length,
+    }, 'chat.resumed')
+    return true
   }
 
   // --- Context loading ---
 
   private async loadContext() {
-    const { database, userId } = this.deps
-
-    const [memoryRows, recentSessions] = await Promise.all([
-      this.getMemoryService().list(),
-      database.select({ id: sessions.id })
-        .from(sessions)
-        .where(eq(sessions.userId, userId))
-        .orderBy(desc(sessions.createdAt))
-        .limit(1),
-    ])
-
-    this.contextMemories = memoryRows.map((memoryRow) => memoryRow.content)
-
-    if (recentSessions.length > 0) {
-      // Keep latest message order for prompts, but limit payload size.
-      const messageRows = await database
-        .select({ role: messages.role, content: messages.content })
-        .from(messages)
-        .where(eq(messages.sessionId, recentSessions[0].id))
-        .orderBy(desc(messages.createdAt))
-        .limit(20)
-
-      this.contextMessages = messageRows.reverse()
-    }
+    const context = await this.chatService.loadWelcomeContext()
+    this.contextMemories = context.memories
+    this.contextMessages = context.recentConversation
   }
 
   // --- Prompt builders ---
 
   private buildWelcomePrompt(): string {
-    const sections: string[] = [
-      'You are a friendly AI assistant. Generate a brief, warm welcome message for the user.',
-    ]
-
-    this.appendSection(sections, 'User memories', this.formatMemoryBullets(this.contextMemories))
-    this.appendSection(sections, 'Recent conversation', this.formatConversation(this.contextMessages))
-    sections.push('Welcome message:')
-    return sections.join('\n\n')
+    return buildWelcomePrompt({
+      memories: this.contextMemories,
+      recentConversation: this.contextMessages,
+    })
   }
 
-  private buildInstructions(): string {
-    const sections: string[] = []
-    this.appendSection(sections, 'User Memories', this.contextMemories.join('\n'))
-    this.appendSection(sections, 'Previous Conversation', this.formatConversation(this.contextMessages))
-    this.appendSection(sections, 'Current Conversation', this.formatConversation(this.history))
-    return sections.join('\n\n')
+  private buildInstructions(input: ChatUserMessageInput): string {
+    return buildInstructions({
+      memories: this.contextMemories,
+      recentConversation: this.contextMessages,
+      history: this.history,
+      input,
+    })
   }
 
   // --- Input queue ---
 
-  private enqueueInput(input: string, ws: WSContext): Promise<void> {
+  private enqueueInput(input: ChatUserMessageInput, ws: WSContext): Promise<void> {
     // Keep the queue alive even if a previous task failed.
     this.processingPromise = this.processingPromise
       .catch(error => {
@@ -253,54 +201,27 @@ export class ChatMaid implements WSEvents {
     return this.processingPromise
   }
 
-  private async processOne(input: string, ws: WSContext) {
-    this.history.push({ role: 'user', content: input })
-
+  private async processOne(input: ChatUserMessageInput, ws: WSContext) {
     // Ensure persistence target exists before streaming any assistant output.
-    const { session, isNew } = await this.getOrCreateSession()
+    const { session, isNew } = await this.chatService.getOrCreateSession()
 
     if (isNew) {
       this.send(ws, { type: 'session.created', sessionId: session.id })
     }
 
-    await session.addMessage('user', input)
+    await this.chatService.persistUserMessage(session, input.message)
+    this.history.push({ role: 'user', content: input.message })
     await this.streamAndSend(input, ws, session)
-  }
-
-  private async getOrCreateSession(): Promise<{ session: Session, isNew: boolean }> {
-    let isNew = !this.sessionPromise
-    if (isNew) {
-      this.sessionPromise = createSession(this.deps.userId, this.deps.database, this.deps.redisClient)
-    }
-
-    try {
-      return { session: await this.sessionPromise!, isNew }
-    } catch (error) {
-      // A cached rejected promise can poison future attempts; clear and retry once.
-      this.sessionPromise = null
-      if (isNew) {
-        throw error
-      }
-
-      isNew = true
-      this.sessionPromise = createSession(this.deps.userId, this.deps.database, this.deps.redisClient)
-      try {
-        return { session: await this.sessionPromise, isNew }
-      } catch (retryError) {
-        this.sessionPromise = null
-        throw retryError
-      }
-    }
   }
 
   // --- Streaming ---
 
-  private async streamAndSend(input: string, ws: WSContext, session: Session) {
-    const instructions = this.buildInstructions()
+  private async streamAndSend(input: ChatUserMessageInput, ws: WSContext, session: Session) {
+    const instructions = this.buildInstructions(input)
     let assistantText = ''
 
     try {
-      const stream = streamResponse(input, instructions)
+      const stream = streamResponse(input.message, instructions)
       this.currentStream = stream
 
       for await (const chunk of stream) {
@@ -315,7 +236,7 @@ export class ChatMaid implements WSEvents {
       this.history.push({ role: 'assistant', content: assistantText })
       this.currentStream = null
 
-      await session.addMessage('assistant', assistantText)
+      await this.chatService.persistAssistantMessage(session, assistantText)
       await this.enqueueMemoryExtraction()
     } catch (error) {
       this.currentStream = null
@@ -343,7 +264,7 @@ export class ChatMaid implements WSEvents {
 
   private async enqueueMemoryExtraction() {
     try {
-      await this.getMemoryService().enqueueExtraction()
+      await this.chatService.enqueueMemoryExtraction()
     } catch (error) {
       logger.error({ error, userId: this.deps.userId }, 'chat.memory_extraction.enqueue_failed')
     }
