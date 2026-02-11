@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm'
 import {
   index,
   integer,
@@ -7,7 +8,12 @@ import {
   serial,
   text,
   timestamp,
+  vector,
 } from 'drizzle-orm/pg-core'
+
+export function toSqlVector(embedding: number[]) {
+  return sql`${`[${embedding.join(',')}]`}::vector`
+}
 
 export const messageRoleEnum = pgEnum('message_role', ['system', 'user', 'assistant', 'tool'])
 
@@ -36,6 +42,7 @@ export const messages = pgTable(
     role: messageRoleEnum('role').notNull(),
     content: text('content').notNull(),
     metadata: jsonb('metadata').default({}),
+    extractedAt: timestamp('extracted_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
@@ -49,10 +56,9 @@ export const memories = pgTable(
   'memories',
   {
     id: serial('id').primaryKey(),
-    userId: integer('user_id')
-      .references(() => sessions.userId, { onDelete: 'cascade' })
-      .notNull(),
+    userId: text('user_id').notNull(),
     content: text('content').notNull(),
+    embedding: vector({ dimensions: 1024 }),
     metadata: jsonb('metadata').default({}),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
