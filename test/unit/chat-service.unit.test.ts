@@ -1,44 +1,60 @@
 import { describe, expect, test } from 'bun:test'
 
-import type { Session } from '../../src/session'
-import type { ConversationRepository, UserMemoryStore } from '../../src/maid/core'
+import type { MemoryService } from '../../src/memory/service'
+import type { SessionService } from '../../src/session-service'
 import { ChatService } from '../../src/maid/service'
 
-function createSession(id: number): Session {
+function createSessionRow(id: number, userId = 'u1') {
+  const now = new Date()
   return {
     id,
-    userId: 'u1',
-    row: {} as any,
-    async update() { return undefined },
-    async delete() { },
-    async addMessage() { return {} as any },
-    async getMessages() { return [] },
+    userId,
+    title: null,
+    metadata: null,
+    createdAt: now,
+    updatedAt: now,
   }
 }
 
-describe('ChatService ports', () => {
-  test('loads welcome context via repository and memory store ports', async () => {
-    const repository: ConversationRepository = {
-      async loadSession() { return null },
-      async createSession() { return createSession(1) },
+describe('ChatService service deps', () => {
+  test('loads welcome context via session and memory services', async () => {
+    const sessionService: SessionService = {
+      userId: 'u1',
+      async load() { return null },
+      async create() { return createSessionRow(1, 'u1') },
+      async update() { return undefined },
+      async delete() { },
       async findLatestSessionId() { return 12 },
-      async listSessionMessages() {
+      async listMessages() {
         return [
           { role: 'assistant', content: 'latest' },
           { role: 'user', content: 'older' },
         ]
       },
+      async getMessages() { return [] as any },
+      async addMessage() { return {} as any },
     }
 
-    const memoryStore: UserMemoryStore = {
-      async list() { return ['prefers tea'] },
+    const memoryService: MemoryService = {
+      userId: 'u1',
+      async create() { throw new Error('not used') },
+      async load() { return null },
+      async list() { return [{ content: 'prefers tea' }] as any },
+      async extractNow() {
+        return {
+          factsExtracted: 0,
+          memoriesAdded: 0,
+          memoriesUpdated: 0,
+          memoriesDeleted: 0,
+          memoriesUnchanged: 0,
+        }
+      },
       async enqueueExtraction() { },
     }
 
     const service = new ChatService({
-      userId: 'u1',
-      conversationRepository: repository,
-      memoryStore,
+      sessionService,
+      memoryService,
     })
 
     const context = await service.loadWelcomeContext()
@@ -49,28 +65,46 @@ describe('ChatService ports', () => {
     ])
   })
 
-  test('enqueues memory extraction through the memory store port', async () => {
-    const calls: string[] = []
+  test('enqueues memory extraction through memory service', async () => {
+    let calls = 0
 
-    const repository: ConversationRepository = {
-      async loadSession() { return null },
-      async createSession() { return createSession(1) },
+    const sessionService: SessionService = {
+      userId: 'u1',
+      async load() { return null },
+      async create() { return createSessionRow(1, 'u1') },
+      async update() { return undefined },
+      async delete() { },
       async findLatestSessionId() { return null },
-      async listSessionMessages() { return [] },
+      async listMessages() { return [] },
+      async getMessages() { return [] as any },
+      async addMessage() { return {} as any },
     }
 
-    const memoryStore: UserMemoryStore = {
+    const memoryService: MemoryService = {
+      userId: 'u1',
+      async create() { throw new Error('not used') },
+      async load() { return null },
       async list() { return [] },
-      async enqueueExtraction(userId) { calls.push(userId) },
+      async extractNow() {
+        return {
+          factsExtracted: 0,
+          memoriesAdded: 0,
+          memoriesUpdated: 0,
+          memoriesDeleted: 0,
+          memoriesUnchanged: 0,
+        }
+      },
+      async enqueueExtraction() {
+        calls += 1
+      },
     }
 
     const service = new ChatService({
-      userId: 'u1',
-      conversationRepository: repository,
-      memoryStore,
+      sessionService,
+      memoryService,
     })
 
     await service.enqueueMemoryExtraction()
-    expect(calls).toEqual(['u1'])
+    expect(calls).toBe(1)
   })
 })

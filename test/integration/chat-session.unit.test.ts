@@ -9,6 +9,7 @@ import * as schema from '../../src/db/schema'
 import { sessions } from '../../src/db/schema'
 import { ChatMaid } from '../../src/maid/chat'
 import { createMemoryService } from '../../src/memory/service'
+import { createSessionService } from '../../src/session-service'
 
 function createMockStream() {
   return {
@@ -118,10 +119,8 @@ afterEach(async () => {
 describe('chat maid session concurrency', () => {
   test('creates exactly one session for a single message', async () => {
     const maid = new ChatMaid({
-      userId: USER_ID,
-      database,
-      redisClient,
-      memory: createMemoryService(USER_ID, database, redisClient),
+      sessionService: createSessionService(USER_ID, database, redisClient),
+      memoryService: createMemoryService(USER_ID, database, redisClient),
     })
     const ws = createMockWs()
 
@@ -137,10 +136,8 @@ describe('chat maid session concurrency', () => {
 
   test('creates exactly one session across sequential messages', async () => {
     const maid = new ChatMaid({
-      userId: USER_ID,
-      database,
-      redisClient,
-      memory: createMemoryService(USER_ID, database, redisClient),
+      sessionService: createSessionService(USER_ID, database, redisClient),
+      memoryService: createMemoryService(USER_ID, database, redisClient),
     })
     const ws = createMockWs()
 
@@ -157,10 +154,8 @@ describe('chat maid session concurrency', () => {
 
   test('creates exactly one session across concurrent messages', async () => {
     const maid = new ChatMaid({
-      userId: USER_ID,
-      database,
-      redisClient,
-      memory: createMemoryService(USER_ID, database, redisClient),
+      sessionService: createSessionService(USER_ID, database, redisClient),
+      memoryService: createMemoryService(USER_ID, database, redisClient),
     })
     const ws = createMockWs()
 
@@ -179,10 +174,8 @@ describe('chat maid session concurrency', () => {
 
   test('concurrent messages all resolve to the same session id', async () => {
     const maid = new ChatMaid({
-      userId: USER_ID,
-      database,
-      redisClient,
-      memory: createMemoryService(USER_ID, database, redisClient),
+      sessionService: createSessionService(USER_ID, database, redisClient),
+      memoryService: createMemoryService(USER_ID, database, redisClient),
     })
     const ws = createMockWs()
 
@@ -201,16 +194,12 @@ describe('chat maid session concurrency', () => {
 
   test('separate maid instances create separate sessions', async () => {
     const maid1 = new ChatMaid({
-      userId: USER_ID,
-      database,
-      redisClient,
-      memory: createMemoryService(USER_ID, database, redisClient),
+      sessionService: createSessionService(USER_ID, database, redisClient),
+      memoryService: createMemoryService(USER_ID, database, redisClient),
     })
     const maid2 = new ChatMaid({
-      userId: USER_ID,
-      database,
-      redisClient,
-      memory: createMemoryService(USER_ID, database, redisClient),
+      sessionService: createSessionService(USER_ID, database, redisClient),
+      memoryService: createMemoryService(USER_ID, database, redisClient),
     })
     const ws1 = createMockWs()
     const ws2 = createMockWs()

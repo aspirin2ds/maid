@@ -1,11 +1,4 @@
 import { beforeEach, describe, expect, mock, test } from 'bun:test'
-const realSession = await import('../../src/session')
-
-type MockSession = {
-  id: number
-  getMessages: () => Promise<Array<{ role: string, content: string }>>
-  addMessage: (role: string, content: string) => Promise<unknown>
-}
 
 type StreamChunk = { type: 'response.output_text.delta', delta: string }
 type StreamLike = {
@@ -16,29 +9,10 @@ type StreamLike = {
 
 let generateTextImpl: (prompt: string) => Promise<string> = async () => 'Welcome!'
 let streamResponseImpl: (input: string, instructions?: string) => StreamLike = () => createStream()
-const loadSessionOverrides = new Map<string, MockSession | null>()
-const createSessionOverrides = new Map<string, () => Promise<MockSession>>()
 
 mock.module('../../src/llm', () => ({
   generateText: (prompt: string) => generateTextImpl(prompt),
   streamResponse: (input: string, instructions?: string) => streamResponseImpl(input, instructions),
-}))
-
-mock.module('../../src/session', () => ({
-  loadSession: (...args: unknown[]) => {
-    const [sessionId, userId] = args as [number, string]
-    const key = `${userId}:${sessionId}`
-    if (loadSessionOverrides.has(key)) {
-      return Promise.resolve(loadSessionOverrides.get(key) ?? null)
-    }
-    return realSession.loadSession(...args as Parameters<typeof realSession.loadSession>)
-  },
-  createSession: (...args: unknown[]) => {
-    const [userId] = args as [string]
-    const override = createSessionOverrides.get(userId)
-    if (override) return override()
-    return realSession.createSession(...args as Parameters<typeof realSession.createSession>)
-  },
 }))
 
 mock.module('../../src/logger', () => ({
@@ -49,7 +23,21 @@ mock.module('../../src/logger', () => ({
   },
 }))
 
+import type { MemoryService } from '../../src/memory/service'
+import type { SessionService } from '../../src/session-service'
 import { ChatMaid } from '../../src/maid/chat'
+
+function createSessionRow(id: number, userId = 'mock-user') {
+  const now = new Date()
+  return {
+    id,
+    userId,
+    title: null,
+    metadata: null,
+    createdAt: now,
+    updatedAt: now,
+  }
+}
 
 function createStream(chunks: string[] = ['hi'], error?: Error): StreamLike {
   return {
@@ -66,57 +54,72 @@ function createStream(chunks: string[] = ['hi'], error?: Error): StreamLike {
   }
 }
 
-function createMockSession(overrides: Partial<MockSession> = {}): MockSession {
+function createMockSessionService(options: {
+  userId?: string
+  sessionId?: number
+  onLoad?: (sessionId: number) => Promise<ReturnType<typeof createSessionRow> | null>
+  onCreate?: () => Promise<ReturnType<typeof createSessionRow>>
+  onGetMessages?: (sessionId: number) => Promise<Array<{ role: string, content: string }>>
+  onAddMessage?: (sessionId: number, role: string, content: string) => Promise<void> | void
+  latestSessionId?: number | null
+  listMessagesRows?: Array<{ role: 'system' | 'user' | 'assistant' | 'tool', content: string }>
+} = {}): SessionService {
+  const {
+    userId = 'mock-user',
+    sessionId,
+    onLoad,
+    onCreate,
+    onGetMessages,
+    onAddMessage,
+    latestSessionId = null,
+    listMessagesRows = [],
+  } = options
+
   return {
-    id: 1,
-    getMessages: async () => [],
-    addMessage: async () => {},
-    ...overrides,
-  }
-}
-
-class FakeQuery<T> implements PromiseLike<T[]> {
-  constructor(private rows: T[]) {}
-
-  from() { return this }
-  where() { return this }
-  orderBy() { return this }
-  limit(n: number) {
-    this.rows = this.rows.slice(0, n)
-    return this
-  }
-
-  then<TResult1 = T[], TResult2 = never>(
-    onfulfilled?: ((value: T[]) => TResult1 | PromiseLike<TResult1>) | null,
-    onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
-  ): PromiseLike<TResult1 | TResult2> {
-    return Promise.resolve(this.rows).then(onfulfilled ?? undefined, onrejected ?? undefined)
-  }
-}
-
-function createMockDb(selectResults: unknown[][]) {
-  return {
-    select() {
-      const rows = (selectResults.shift() ?? []) as any[]
-      return new FakeQuery(rows)
+    userId,
+    sessionId,
+    async load(targetSessionId) {
+      if (onLoad) return await onLoad(targetSessionId)
+      return null
+    },
+    async create() {
+      if (onCreate) return await onCreate()
+      return createSessionRow(1, userId)
+    },
+    async update() {
+      return undefined
+    },
+    async delete() {
+    },
+    async findLatestSessionId() {
+      return latestSessionId
+    },
+    async listMessages() {
+      return listMessagesRows
+    },
+    async getMessages(targetSessionId) {
+      if (onGetMessages) {
+        return await onGetMessages(targetSessionId) as any
+      }
+      return [] as any
+    },
+    async addMessage(targetSessionId, role, content) {
+      await onAddMessage?.(targetSessionId, role, content)
+      return {} as any
     },
   }
-}
-
-function createMockRedis() {
-  return {}
 }
 
 function createMockMemoryService(options: {
   listRows?: Array<{ content: string }>
   onEnqueue?: () => void | Promise<void>
-} = {}) {
+} = {}): MemoryService {
   const { listRows = [], onEnqueue } = options
   return {
     userId: 'mock-user',
     async create() { throw new Error('not implemented in unit test') },
     async load() { return null },
-    async list() { return listRows },
+    async list() { return listRows as any },
     async extractNow() {
       return {
         factsExtracted: 0,
@@ -166,22 +169,18 @@ beforeEach(() => {
 
 describe('ChatMaid onOpen', () => {
   test('resumes existing session and sends session.resumed', async () => {
-    const resumedSession = createMockSession({
-      id: 42,
-      getMessages: async () => [
-        { role: 'user', content: 'hello' },
-        { role: 'assistant', content: 'hi there' },
-        { role: 'system', content: 'ignored' },
-      ],
-    })
-    loadSessionOverrides.set('u1:42', resumedSession)
-
     const maid = new ChatMaid({
-      userId: 'u1',
-      sessionId: 42,
-      database: createMockDb([]) as any,
-      redisClient: createMockRedis() as any,
-      memory: createMockMemoryService({
+      sessionService: createMockSessionService({
+        userId: 'u1',
+        sessionId: 42,
+        onLoad: async (id) => id === 42 ? createSessionRow(42, 'u1') : null,
+        onGetMessages: async () => [
+          { role: 'user', content: 'hello' },
+          { role: 'assistant', content: 'hi there' },
+          { role: 'system', content: 'ignored' },
+        ],
+      }),
+      memoryService: createMockMemoryService({
         listRows: [{ content: 'prefers tea' }],
       }) as any,
     })
@@ -205,16 +204,15 @@ describe('ChatMaid onOpen', () => {
     }
 
     const maid = new ChatMaid({
-      userId: 'u2',
-      database: createMockDb([
-        [{ id: 7 }],
-        [
+      sessionService: createMockSessionService({
+        userId: 'u2',
+        latestSessionId: 7,
+        listMessagesRows: [
           { role: 'assistant', content: 'latest' },
           { role: 'user', content: 'older' },
         ],
-      ]) as any,
-      redisClient: createMockRedis() as any,
-      memory: createMockMemoryService({
+      }),
+      memoryService: createMockMemoryService({
         listRows: [{ content: 'loves jazz' }],
       }) as any,
     })
@@ -236,10 +234,8 @@ describe('ChatMaid onOpen', () => {
     }
 
     const maid = new ChatMaid({
-      userId: 'u3',
-      database: createMockDb([[]]) as any,
-      redisClient: createMockRedis() as any,
-      memory: createMockMemoryService() as any,
+      sessionService: createMockSessionService({ userId: 'u3' }),
+      memoryService: createMockMemoryService() as any,
     })
     const ws = createMockWs()
 
@@ -255,10 +251,8 @@ describe('ChatMaid onOpen', () => {
 describe('ChatMaid onMessage validation and control', () => {
   test('returns invalid format for invalid JSON', async () => {
     const maid = new ChatMaid({
-      userId: 'u4',
-      database: createMockDb([]) as any,
-      redisClient: createMockRedis() as any,
-      memory: createMockMemoryService() as any,
+      sessionService: createMockSessionService({ userId: 'u4' }),
+      memoryService: createMockMemoryService() as any,
     })
     const ws = createMockWs()
 
@@ -269,10 +263,8 @@ describe('ChatMaid onMessage validation and control', () => {
 
   test('returns invalid format for schema mismatch', async () => {
     const maid = new ChatMaid({
-      userId: 'u5',
-      database: createMockDb([]) as any,
-      redisClient: createMockRedis() as any,
-      memory: createMockMemoryService() as any,
+      sessionService: createMockSessionService({ userId: 'u5' }),
+      memoryService: createMockMemoryService() as any,
     })
     const ws = createMockWs()
 
@@ -286,10 +278,8 @@ describe('ChatMaid onMessage validation and control', () => {
 
   test('returns empty input for blank message', async () => {
     const maid = new ChatMaid({
-      userId: 'u6',
-      database: createMockDb([]) as any,
-      redisClient: createMockRedis() as any,
-      memory: createMockMemoryService() as any,
+      sessionService: createMockSessionService({ userId: 'u6' }),
+      memoryService: createMockMemoryService() as any,
     })
     const ws = createMockWs()
 
@@ -301,10 +291,8 @@ describe('ChatMaid onMessage validation and control', () => {
   test('aborts current stream and closes websocket on abort event', async () => {
     let aborted = false
     const maid = new ChatMaid({
-      userId: 'u7',
-      database: createMockDb([]) as any,
-      redisClient: createMockRedis() as any,
-      memory: createMockMemoryService() as any,
+      sessionService: createMockSessionService({ userId: 'u7' }),
+      memoryService: createMockMemoryService() as any,
     })
     ;(maid as any).currentStream = {
       abort() { aborted = true },
@@ -321,16 +309,8 @@ describe('ChatMaid onMessage validation and control', () => {
 
 describe('ChatMaid streaming and queue behavior', () => {
   test('streams deltas and persists user + assistant messages', async () => {
-    const addCalls: Array<{ role: string, content: string }> = []
+    const addCalls: Array<{ sessionId: number, role: string, content: string }> = []
     const memoryJobs: number[] = []
-    createSessionOverrides.set('u8', async () =>
-      createMockSession({
-        id: 99,
-        addMessage: async (role, content) => {
-          addCalls.push({ role, content })
-        },
-      })
-    )
 
     let streamInput = ''
     let streamInstructions = ''
@@ -341,10 +321,14 @@ describe('ChatMaid streaming and queue behavior', () => {
     }
 
     const maid = new ChatMaid({
-      userId: 'u8',
-      database: createMockDb([]) as any,
-      redisClient: createMockRedis() as any,
-      memory: createMockMemoryService({
+      sessionService: createMockSessionService({
+        userId: 'u8',
+        onCreate: async () => createSessionRow(99, 'u8'),
+        onAddMessage: async (sessionId, role, content) => {
+          addCalls.push({ sessionId, role, content })
+        },
+      }),
+      memoryService: createMockMemoryService({
         onEnqueue: () => {
           memoryJobs.push(1)
         },
@@ -362,28 +346,25 @@ describe('ChatMaid streaming and queue behavior', () => {
     expect(streamInstructions).toContain('# Current Conversation')
     expect(streamInstructions).toContain('user: hi there')
     expect(addCalls).toEqual([
-      { role: 'user', content: 'hi there' },
-      { role: 'assistant', content: 'hello world' },
+      { sessionId: 99, role: 'user', content: 'hi there' },
+      { sessionId: 99, role: 'assistant', content: 'hello world' },
     ])
     expect(memoryJobs).toEqual([1])
   })
 
   test('handles stream errors by sending generation error', async () => {
     const addCalls: Array<{ role: string, content: string }> = []
-    createSessionOverrides.set('u9', async () =>
-      createMockSession({
-        addMessage: async (role, content) => {
-          addCalls.push({ role, content })
-        },
-      })
-    )
     streamResponseImpl = () => createStream([], new Error('stream failed'))
 
     const maid = new ChatMaid({
-      userId: 'u9',
-      database: createMockDb([]) as any,
-      redisClient: createMockRedis() as any,
-      memory: createMockMemoryService() as any,
+      sessionService: createMockSessionService({
+        userId: 'u9',
+        onCreate: async () => createSessionRow(9, 'u9'),
+        onAddMessage: async (_id, role, content) => {
+          addCalls.push({ role, content })
+        },
+      }),
+      memoryService: createMockMemoryService() as any,
     })
     const ws = createMockWs()
 
@@ -397,13 +378,13 @@ describe('ChatMaid streaming and queue behavior', () => {
     const abortError = new Error('aborted')
     abortError.name = 'APIUserAbortError'
     streamResponseImpl = () => createStream([], abortError)
-    createSessionOverrides.set('u10', async () => createMockSession())
 
     const maid = new ChatMaid({
-      userId: 'u10',
-      database: createMockDb([]) as any,
-      redisClient: createMockRedis() as any,
-      memory: createMockMemoryService() as any,
+      sessionService: createMockSessionService({
+        userId: 'u10',
+        onCreate: async () => createSessionRow(10, 'u10'),
+      }),
+      memoryService: createMockMemoryService() as any,
     })
     const ws = createMockWs()
 
@@ -415,17 +396,17 @@ describe('ChatMaid streaming and queue behavior', () => {
 
   test('recovers queue after a failed message and processes the next one', async () => {
     let attempts = 0
-    createSessionOverrides.set('u11', async () => {
-      attempts += 1
-      if (attempts === 1) throw new Error('first create fails')
-      return createMockSession({ id: 123 })
-    })
 
     const maid = new ChatMaid({
-      userId: 'u11',
-      database: createMockDb([]) as any,
-      redisClient: createMockRedis() as any,
-      memory: createMockMemoryService() as any,
+      sessionService: createMockSessionService({
+        userId: 'u11',
+        onCreate: async () => {
+          attempts += 1
+          if (attempts === 1) throw new Error('first create fails')
+          return createSessionRow(123, 'u11')
+        },
+      }),
+      memoryService: createMockMemoryService() as any,
     })
     const ws = createMockWs()
 
@@ -441,10 +422,8 @@ describe('ChatMaid lifecycle cleanup', () => {
   test('aborts stream and clears history on close and error', () => {
     let aborts = 0
     const maid = new ChatMaid({
-      userId: 'u12',
-      database: createMockDb([]) as any,
-      redisClient: createMockRedis() as any,
-      memory: createMockMemoryService() as any,
+      sessionService: createMockSessionService({ userId: 'u12' }),
+      memoryService: createMockMemoryService() as any,
     })
 
     ;(maid as any).currentStream = { abort: () => { aborts += 1 } }

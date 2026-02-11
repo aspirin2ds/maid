@@ -7,7 +7,7 @@ import Redis from 'ioredis'
 
 import * as schema from '../../src/db/schema'
 import { sessions, messages } from '../../src/db/schema'
-import { createSession } from '../../src/session'
+import { createSessionService } from '../../src/session-service'
 
 const USER_ID = 'user_session_test'
 const OTHER_USER_ID = 'user_other'
@@ -17,6 +17,10 @@ let redisContainer: Awaited<ReturnType<GenericContainer['start']>> | null = null
 let database: ReturnType<typeof drizzle<typeof schema>>
 let databaseClient: ReturnType<typeof postgres>
 let redisClient: Redis
+
+function getService(userId: string) {
+  return createSessionService(userId, database, redisClient)
+}
 
 beforeAll(async () => {
   postgresContainer = await new GenericContainer('pgvector/pgvector:pg18')
@@ -80,27 +84,33 @@ afterEach(async () => {
   await database.delete(sessions)
 })
 
-describe('createSession', () => {
+describe('session service create/load', () => {
   test('creates a session row in the database', async () => {
-    const session = await createSession(USER_ID, database, redisClient)
+    const service = getService(USER_ID)
+    const session = await service.create()
 
     expect(session.id).toBeGreaterThan(0)
     expect(session.userId).toBe(USER_ID)
-    expect(session.row.userId).toBe(USER_ID)
-    expect(session.row.title).toBeNull()
+    expect(session.title).toBeNull()
+
+    const loaded = await service.load(session.id)
+    expect(loaded?.id).toBe(session.id)
+    expect(loaded?.userId).toBe(USER_ID)
   })
 
   test('creates a session with a title', async () => {
-    const session = await createSession(USER_ID, database, redisClient, 'My Chat')
+    const service = getService(USER_ID)
+    const session = await service.create('My Chat')
 
-    expect(session.row.title).toBe('My Chat')
+    expect(session.title).toBe('My Chat')
   })
 })
 
-describe('session.update', () => {
+describe('session service update', () => {
   test('updates the session title', async () => {
-    const session = await createSession(USER_ID, database, redisClient)
-    const updated = await session.update({ title: 'New Title' })
+    const service = getService(USER_ID)
+    const session = await service.create()
+    const updated = await service.update(session.id, { title: 'New Title' })
 
     expect(updated).toBeDefined()
     expect(updated!.title).toBe('New Title')
@@ -108,48 +118,53 @@ describe('session.update', () => {
   })
 
   test('updates the session metadata', async () => {
-    const session = await createSession(USER_ID, database, redisClient)
-    const updated = await session.update({ metadata: { theme: 'dark' } })
+    const service = getService(USER_ID)
+    const session = await service.create()
+    const updated = await service.update(session.id, { metadata: { theme: 'dark' } })
 
     expect(updated).toBeDefined()
     expect(updated!.metadata).toEqual({ theme: 'dark' })
   })
 
   test('sets updatedAt to a newer timestamp', async () => {
-    const session = await createSession(USER_ID, database, redisClient)
+    const service = getService(USER_ID)
+    const session = await service.create()
     await Bun.sleep(10)
-    const updated = await session.update({ title: 'Later' })
+    const updated = await service.update(session.id, { title: 'Later' })
 
-    expect(updated!.updatedAt.getTime()).toBeGreaterThan(session.row.createdAt.getTime())
+    expect(updated!.updatedAt.getTime()).toBeGreaterThan(session.createdAt.getTime())
   })
 })
 
-describe('session.delete', () => {
+describe('session service delete', () => {
   test('removes the session from the database', async () => {
-    const session = await createSession(USER_ID, database, redisClient)
-    await session.delete()
+    const service = getService(USER_ID)
+    const session = await service.create()
+    await service.delete(session.id)
 
     const rows = await database.select().from(sessions)
     expect(rows).toHaveLength(0)
   })
 
   test('cascades to messages', async () => {
-    const session = await createSession(USER_ID, database, redisClient)
-    await session.addMessage('user', 'hello')
-    await session.delete()
+    const service = getService(USER_ID)
+    const session = await service.create()
+    await service.addMessage(session.id, 'user', 'hello')
+    await service.delete(session.id)
 
     const rows = await database.select().from(messages)
     expect(rows).toHaveLength(0)
   })
 })
 
-describe('session.addMessage / getMessages', () => {
+describe('session service addMessage/getMessages', () => {
   test('adds and retrieves messages', async () => {
-    const session = await createSession(USER_ID, database, redisClient)
-    await session.addMessage('user', 'Hello')
-    await session.addMessage('assistant', 'Hi there')
+    const service = getService(USER_ID)
+    const session = await service.create()
+    await service.addMessage(session.id, 'user', 'Hello')
+    await service.addMessage(session.id, 'assistant', 'Hi there')
 
-    const messageRows = await session.getMessages()
+    const messageRows = await service.getMessages(session.id)
     expect(messageRows).toHaveLength(2)
     expect(messageRows[0].role).toBe('user')
     expect(messageRows[0].content).toBe('Hello')
@@ -158,42 +173,47 @@ describe('session.addMessage / getMessages', () => {
   })
 
   test('returns messages in chronological order', async () => {
-    const session = await createSession(USER_ID, database, redisClient)
-    await session.addMessage('user', 'first')
-    await session.addMessage('assistant', 'second')
-    await session.addMessage('user', 'third')
+    const service = getService(USER_ID)
+    const session = await service.create()
+    await service.addMessage(session.id, 'user', 'first')
+    await service.addMessage(session.id, 'assistant', 'second')
+    await service.addMessage(session.id, 'user', 'third')
 
-    const messageRows = await session.getMessages()
+    const messageRows = await service.getMessages(session.id)
     expect(messageRows.map((m) => m.content)).toEqual(['first', 'second', 'third'])
   })
 
   test('stores metadata on messages', async () => {
-    const session = await createSession(USER_ID, database, redisClient)
-    const messageRow = await session.addMessage('user', 'hello', { source: 'web' })
+    const service = getService(USER_ID)
+    const session = await service.create()
+    const messageRow = await service.addMessage(session.id, 'user', 'hello', { source: 'web' })
 
     expect(messageRow.metadata).toEqual({ source: 'web' })
   })
 
   test('returns empty array for a deleted session', async () => {
-    const session = await createSession(USER_ID, database, redisClient)
-    await session.addMessage('user', 'hello')
-    await session.delete()
+    const service = getService(USER_ID)
+    const session = await service.create()
+    await service.addMessage(session.id, 'user', 'hello')
+    await service.delete(session.id)
 
-    const messageRows = await session.getMessages()
+    const messageRows = await service.getMessages(session.id)
     expect(messageRows).toHaveLength(0)
   })
 })
 
 describe('user isolation', () => {
   test('sessions are scoped to the creating user', async () => {
-    const session1 = await createSession(USER_ID, database, redisClient)
-    const session2 = await createSession(OTHER_USER_ID, database, redisClient)
+    const user1Service = getService(USER_ID)
+    const user2Service = getService(OTHER_USER_ID)
+    const session1 = await user1Service.create()
+    const session2 = await user2Service.create()
 
-    await session1.addMessage('user', 'from user 1')
-    await session2.addMessage('user', 'from user 2')
+    await user1Service.addMessage(session1.id, 'user', 'from user 1')
+    await user2Service.addMessage(session2.id, 'user', 'from user 2')
 
-    const msgs1 = await session1.getMessages()
-    const msgs2 = await session2.getMessages()
+    const msgs1 = await user1Service.getMessages(session1.id)
+    const msgs2 = await user2Service.getMessages(session2.id)
 
     expect(msgs1).toHaveLength(1)
     expect(msgs1[0].content).toBe('from user 1')

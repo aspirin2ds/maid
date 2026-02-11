@@ -9,8 +9,6 @@ import postgres from 'postgres'
 import Redis from 'ioredis'
 
 import { env } from './env'
-import { getMaid } from './maid'
-import { createMemoryExtractionQueue } from './memory/queue'
 import type { AppEnv, BetterAuthSessionResponse } from './types'
 
 import * as schema from './db/schema'
@@ -18,7 +16,6 @@ const databaseClient = postgres(env.DATABASE_URL)
 const database = drizzle(databaseClient, { schema })
 
 const redisClient = new Redis(env.REDIS_URL, { lazyConnect: true })
-const memoryExtractionQueue = createMemoryExtractionQueue(redisClient, database)
 
 const app = new Hono<AppEnv>()
 let isShuttingDown = false
@@ -47,7 +44,7 @@ function getAuthorizationHeader(context: Context<AppEnv>) {
   return token.startsWith('Bearer ') ? token : `Bearer ${token}`
 }
 
-const requireSession = createMiddleware(async (c, next) => {
+const requireAuth = createMiddleware(async (c, next) => {
   const authorization = getAuthorizationHeader(c)
 
   if (!authorization?.startsWith('Bearer ')) {
@@ -84,23 +81,8 @@ const requireSession = createMiddleware(async (c, next) => {
 
 app.get(
   '/stream/:maid',
-  requireSession,
+  requireAuth,
   async (c, next) => {
-    const sessionId = c.req.query('sessionId')
-    const userId = c.get('userId')
-    const maid = getMaid(c.req.param('maid'), {
-      userId,
-      sessionId: sessionId ? Number(sessionId) : undefined,
-
-      database,
-      redisClient,
-
-      enqueueMemoryExtraction: memoryExtractionQueue.enqueueMemoryExtraction,
-    })
-    if (!maid) {
-      return c.json({ error: 'Maid not found' }, 404)
-    }
-    return upgradeWebSocket(() => maid)(c, next)
   },
 )
 
@@ -117,7 +99,6 @@ app.get('/redis/health', async (context) => context.json({ ok: (await redisClien
 
 async function closeResources() {
   const results = await Promise.allSettled([
-    memoryExtractionQueue.close(),
     redisClient.quit(),
     databaseClient.end({ timeout: 5 }),
   ])
