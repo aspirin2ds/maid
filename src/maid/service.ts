@@ -6,13 +6,13 @@ import { createSession, loadSession, type Session } from '../session'
 import type { HandlerDeps } from '../types'
 import type { ConversationRepository, PromptHistoryItem, PromptMessage, UserMemoryStore } from './core'
 
-export type ResumedChatContext = {
+type ResumedChatContext = {
   session: Session
   history: PromptHistoryItem[]
   memories: string[]
 }
 
-export type WarmWelcomeContext = {
+type WarmWelcomeContext = {
   memories: string[]
   recentConversation: PromptMessage[]
 }

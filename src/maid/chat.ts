@@ -20,7 +20,6 @@ const wsMessageSchema = z.object({
   msg: z.string().optional(),
 })
 
-type IncomingEvent = z.infer<typeof wsMessageSchema>
 export class ChatMaid implements WSEvents {
   private deps: HandlerDeps
   private chatService: ChatService
@@ -110,7 +109,7 @@ export class ChatMaid implements WSEvents {
     ws.send(JSON.stringify(payload))
   }
 
-  private parseIncomingEvent(event: MessageEvent): IncomingEvent | null {
+  private parseIncomingEvent(event: MessageEvent): z.infer<typeof wsMessageSchema> | null {
     const raw = typeof event.data === 'string' ? event.data : ''
 
     try {

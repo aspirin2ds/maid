@@ -70,10 +70,8 @@ export function buildInstructions(params: BuildInstructionsParams): string {
   return sections.join('\n\n')
 }
 
-export type StoredMessageRole = 'system' | 'user' | 'assistant' | 'tool'
-
 export type StoredMessage = {
-  role: StoredMessageRole
+  role: 'system' | 'user' | 'assistant' | 'tool'
   content: string
 }
 
