@@ -1,14 +1,31 @@
 services:
+  migrator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/maid
+    command: ["bun", "run", "scripts/migrate.ts"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   app:
     build:
       context: .
       dockerfile: Dockerfile
+    env_file:
+      - .env
     environment:
       PORT: 3000
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/maid
       REDIS_URL: redis://redis:6379
-    command: sh -c "bun run db:migrate && bun run start"
+    command: ["bun", "run", "start"]
     depends_on:
+      migrator:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:

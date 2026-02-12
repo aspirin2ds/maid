@@ -8,7 +8,7 @@
     "test:e2e": "if ! docker info >/dev/null 2>&1; then echo 'Docker is required for e2e tests.'; exit 1; fi; bun test test/e2e --max-concurrency 1",
     "test:all": "bun run test:unit && bun run test:integration && bun run test:e2e",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate"
+    "db:migrate": "bun run scripts/migrate.ts"
   },
   "dependencies": {
     "bullmq": "^5.67.3",
