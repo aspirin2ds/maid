@@ -29,7 +29,7 @@ export const sessions = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
-  (table) => [index('sessions_created_at_idx').on(table.createdAt)],
+  () => [],
 )
 
 export const messages = pgTable(
@@ -48,7 +48,6 @@ export const messages = pgTable(
   },
   (table) => [
     index('messages_session_id_idx').on(table.sessionId),
-    index('messages_created_at_idx').on(table.createdAt),
   ],
 )
 
@@ -65,6 +64,6 @@ export const memories = pgTable(
   },
   (table) => [
     index('memories_user_id_idx').on(table.userId),
-    index('memories_created_at_idx').on(table.createdAt),
+    index('memories_embedding_cosine_idx').using('hnsw', table.embedding.op('vector_cosine_ops')),
   ],
 )

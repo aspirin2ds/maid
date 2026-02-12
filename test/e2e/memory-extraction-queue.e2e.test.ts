@@ -6,16 +6,16 @@ import Redis from 'ioredis'
 
 import { memories, messages, sessions } from '../../src/db/schema'
 import {
-  setupMemoryExtractionTestEnv,
-  teardownMemoryExtractionTestEnv,
-  type MemoryExtractionTestEnv,
+  setupE2eTestEnv,
+  teardownE2eTestEnv,
+  type E2eTestEnv,
 } from './helpers/testcontainers'
 
 const TEST_USER_ID = 'testUserId'
 const QUEUE_NAME = 'memory-extraction'
 const JOB_ID = `memory-${TEST_USER_ID}`
 
-let env: MemoryExtractionTestEnv | undefined
+let env: E2eTestEnv | undefined
 let inspectorRedisClient: Redis | undefined
 let inspectorQueue: Queue | undefined
 
@@ -86,7 +86,7 @@ async function getUserMemories() {
 
 describe('Memory extraction queue e2e', () => {
   beforeAll(async () => {
-    env = await setupMemoryExtractionTestEnv()
+    env = await setupE2eTestEnv()
     inspectorRedisClient = env.redisClient.duplicate({ maxRetriesPerRequest: null })
     inspectorQueue = new Queue(QUEUE_NAME, { connection: inspectorRedisClient })
   }, 120_000)
@@ -101,7 +101,7 @@ describe('Memory extraction queue e2e', () => {
       inspectorQueue?.close(),
       inspectorRedisClient?.quit(),
     ])
-    await teardownMemoryExtractionTestEnv(env)
+    await teardownE2eTestEnv(env)
   }, 120_000)
 
   test(
@@ -113,7 +113,7 @@ describe('Memory extraction queue e2e', () => {
         { role: 'user', content: 'I live in Seattle and love hiking on weekends.' },
       ])
 
-      await env!.extractionQueue.enqueueMemoryExtraction({ userId: TEST_USER_ID })
+      await env!.memoryExtractionQueue.enqueueMemoryExtraction({ userId: TEST_USER_ID })
 
       const queuedJob = await inspectorQueue!.getJob(JOB_ID)
       expect(queuedJob).not.toBeNull()
@@ -153,8 +153,8 @@ describe('Memory extraction queue e2e', () => {
         { role: 'assistant', content: 'Mochi is a cute name.' },
       ])
 
-      await env!.extractionQueue.enqueueMemoryExtraction({ userId: TEST_USER_ID })
-      await env!.extractionQueue.enqueueMemoryExtraction({ userId: TEST_USER_ID })
+      await env!.memoryExtractionQueue.enqueueMemoryExtraction({ userId: TEST_USER_ID })
+      await env!.memoryExtractionQueue.enqueueMemoryExtraction({ userId: TEST_USER_ID })
 
       const jobs = await inspectorQueue!.getJobs(['delayed', 'waiting', 'active'])
       const matchingJobs = jobs.filter((job) => String(job.id) === JOB_ID)
@@ -179,7 +179,7 @@ describe('Memory extraction queue e2e', () => {
         { role: 'user', content: 'I am learning Spanish.' },
       ])
 
-      await env!.extractionQueue.enqueueMemoryExtraction({ userId: TEST_USER_ID })
+      await env!.memoryExtractionQueue.enqueueMemoryExtraction({ userId: TEST_USER_ID })
 
       await Bun.sleep(500)
       await appendMessages(sessionId, [
@@ -188,7 +188,7 @@ describe('Memory extraction queue e2e', () => {
       ])
 
       // Second enqueue should be deduped while the delayed job is still pending.
-      await env!.extractionQueue.enqueueMemoryExtraction({ userId: TEST_USER_ID })
+      await env!.memoryExtractionQueue.enqueueMemoryExtraction({ userId: TEST_USER_ID })
 
       const jobs = await inspectorQueue!.getJobs(['delayed', 'waiting', 'active'])
       const matchingJobs = jobs.filter((job) => String(job.id) === JOB_ID)

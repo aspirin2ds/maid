@@ -1,8 +1,6 @@
 import { drizzle } from 'drizzle-orm/node-postgres'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import Redis from 'ioredis'
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { Wait } from 'testcontainers'
 import { Pool } from 'pg'
 
@@ -11,35 +9,20 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testconta
 
 import * as schema from '../../../src/db/schema'
 import { createMemoryExtractionQueue, type MemoryExtractionQueue } from '../../../src/memory/queue'
+import { runMigrations } from '../../../scripts/migrate'
 
 type Database = NodePgDatabase<typeof schema>
 
-export type MemoryExtractionTestEnv = {
+export type E2eTestEnv = {
   postgresContainer: StartedPostgreSqlContainer
   redisContainer: StartedRedisContainer
   sqlClient: Pool
   redisClient: Redis
   db: Database
-  extractionQueue: MemoryExtractionQueue
+  memoryExtractionQueue: MemoryExtractionQueue
 }
 
-async function applyMigrations(client: Pool) {
-  await client.query('CREATE EXTENSION IF NOT EXISTS vector')
-
-  const migrationPath = join(process.cwd(), 'drizzle', '0000_lush_lenny_balinger.sql')
-  const migrationSql = readFileSync(migrationPath, 'utf8')
-
-  const statements = migrationSql
-    .split('--> statement-breakpoint')
-    .map((statement) => statement.trim())
-    .filter(Boolean)
-
-  for (const statement of statements) {
-    await client.query(statement)
-  }
-}
-
-export async function setupMemoryExtractionTestEnv(): Promise<MemoryExtractionTestEnv> {
+export async function setupE2eTestEnv(): Promise<E2eTestEnv> {
   process.env.TESTCONTAINERS_RYUK_DISABLED ??= 'true'
 
   const pgDb = 'maid_test_db'
@@ -61,7 +44,7 @@ export async function setupMemoryExtractionTestEnv(): Promise<MemoryExtractionTe
   const pgUri = `postgres://${pgUser}:${pgPassword}@${pgHost}:${pgPort}/${pgDb}`
 
   const sqlClient = new Pool({ connectionString: pgUri, max: 5 })
-  await applyMigrations(sqlClient)
+  await runMigrations(pgUri)
 
   const db: Database = drizzle(sqlClient, { schema })
 
@@ -69,7 +52,7 @@ export async function setupMemoryExtractionTestEnv(): Promise<MemoryExtractionTe
     maxRetriesPerRequest: null,
   })
 
-  const extractionQueue = createMemoryExtractionQueue(
+  const memoryExtractionQueue = createMemoryExtractionQueue(
     redisClient.duplicate({ maxRetriesPerRequest: null }),
     db,
   )
@@ -80,15 +63,15 @@ export async function setupMemoryExtractionTestEnv(): Promise<MemoryExtractionTe
     sqlClient,
     redisClient,
     db,
-    extractionQueue,
+    memoryExtractionQueue,
   }
 }
 
-export async function teardownMemoryExtractionTestEnv(env: MemoryExtractionTestEnv | undefined): Promise<void> {
+export async function teardownE2eTestEnv(env: E2eTestEnv | undefined): Promise<void> {
   if (!env) return
 
   await Promise.allSettled([
-    env.extractionQueue?.close(),
+    env.memoryExtractionQueue?.close(),
     env.redisClient?.quit(),
     env.sqlClient?.end(),
     env.redisContainer?.stop(),

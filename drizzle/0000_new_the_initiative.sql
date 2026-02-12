@@ -31,7 +31,5 @@ CREATE TABLE "sessions" (
 --> statement-breakpoint
 ALTER TABLE "messages" ADD CONSTRAINT "messages_session_id_sessions_id_fk" FOREIGN KEY ("session_id") REFERENCES "public"."sessions"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "memories_user_id_idx" ON "memories" USING btree ("user_id");--> statement-breakpoint
-CREATE INDEX "memories_created_at_idx" ON "memories" USING btree ("created_at");--> statement-breakpoint
-CREATE INDEX "messages_session_id_idx" ON "messages" USING btree ("session_id");--> statement-breakpoint
-CREATE INDEX "messages_created_at_idx" ON "messages" USING btree ("created_at");--> statement-breakpoint
-CREATE INDEX "sessions_created_at_idx" ON "sessions" USING btree ("created_at");
+CREATE INDEX "memories_embedding_cosine_idx" ON "memories" USING hnsw ("embedding" vector_cosine_ops);--> statement-breakpoint
+CREATE INDEX "messages_session_id_idx" ON "messages" USING btree ("session_id");

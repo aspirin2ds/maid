@@ -2,13 +2,13 @@ import 'dotenv/config'
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
 import { eq } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/node-postgres'
-import { migrate } from 'drizzle-orm/node-postgres/migrator'
 import { Pool } from 'pg'
 import { GenericContainer, Wait } from 'testcontainers'
 
 import * as schema from '../../src/db/schema'
 import { memories, messages, sessions } from '../../src/db/schema'
 import { extractMemory } from '../../src/memory/extraction'
+import { runMigrations } from '../../scripts/migrate'
 
 const USER_ID = 'user_test'
 
@@ -29,28 +29,7 @@ async function setupPostgres() {
 
   const databaseUrl = `postgresql://postgres:postgres@${postgresContainer.getHost()}:${postgresContainer.getMappedPort(5432)}/maid`
 
-  // Enable pgvector extension + run migrations with retry (container may still be starting)
-  const startedAt = Date.now()
-  const timeoutMs = 30_000
-  let lastError: unknown = null
-
-  while (Date.now() - startedAt < timeoutMs) {
-    const client = new Pool({ connectionString: databaseUrl })
-    try {
-      await client.query('CREATE EXTENSION IF NOT EXISTS vector')
-      const migrationDb = drizzle(client)
-      await migrate(migrationDb, { migrationsFolder: './drizzle' })
-      await client.end()
-      break
-    } catch (error) {
-      lastError = error
-      await client.end()
-      await Bun.sleep(500)
-      if (Date.now() - startedAt >= timeoutMs) {
-        throw new Error(`Failed to setup database: ${String(lastError)}`)
-      }
-    }
-  }
+  await runMigrations(databaseUrl)
 
   databaseClient = new Pool({ connectionString: databaseUrl })
   database = drizzle(databaseClient, { schema })

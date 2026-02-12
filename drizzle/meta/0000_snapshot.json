@@ -1,5 +1,5 @@
 {
-  "id": "9d682f9f-3d70-423f-82aa-388bb01a3683",
+  "id": "9e0b4ef9-405f-4248-a3c8-635967e35650",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -70,19 +70,20 @@
           "method": "btree",
           "with": {}
         },
-        "memories_created_at_idx": {
-          "name": "memories_created_at_idx",
+        "memories_embedding_cosine_idx": {
+          "name": "memories_embedding_cosine_idx",
           "columns": [
             {
-              "expression": "created_at",
+              "expression": "embedding",
               "isExpression": false,
               "asc": true,
-              "nulls": "last"
+              "nulls": "last",
+              "opclass": "vector_cosine_ops"
             }
           ],
           "isUnique": false,
           "concurrently": false,
-          "method": "btree",
+          "method": "hnsw",
           "with": {}
         }
       },
@@ -165,21 +166,6 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
-        },
-        "messages_created_at_idx": {
-          "name": "messages_created_at_idx",
-          "columns": [
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
         }
       },
       "foreignKeys": {
@@ -247,23 +233,7 @@
           "default": "now()"
         }
       },
-      "indexes": {
-        "sessions_created_at_idx": {
-          "name": "sessions_created_at_idx",
-          "columns": [
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
+      "indexes": {},
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
