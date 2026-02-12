@@ -27,7 +27,7 @@ export type Session = {
 }
 
 export type SessionService = {
-  create: (sessionId?: number) => Promise<Session>
+  ensure: (sessionId?: number) => Promise<Session>
 }
 
 export function createSessionService({ database, redisClient: _redisClient, userId }: CreateSessionServiceOptions): SessionService {
@@ -64,7 +64,7 @@ export function createSessionService({ database, redisClient: _redisClient, user
   }
 
   return {
-    create: async (sessionId) => {
+    ensure: async (sessionId) => {
       const resolvedSessionId = await ensureSessionId(sessionId)
 
       return {

@@ -3,6 +3,7 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 
 import type * as schema from '../db/schema'
 import { memories, messages, sessions, toSqlVector } from '../db/schema'
+import { env } from '../env'
 import { generateEmbeddings, generateText } from '../llm'
 import { logger } from '../logger'
 import {
@@ -11,10 +12,6 @@ import {
   getUpdateMemoryPrompt,
   type MemoryAction,
 } from './prompts'
-
-const THRESHOLD = 0.7
-const TOP_K = 5
-const RETRIES = 3
 
 type Database = NodePgDatabase<typeof schema>
 
@@ -66,7 +63,7 @@ async function findNearbyMemories(
 
   for (const fact of facts) {
     const embedding = embeddingsByFact.get(fact)!
-    const maxDist = 1 - THRESHOLD
+    const maxDist = 1 - env.MEMORY_EXTRACTION_THRESHOLD
     const distance = cosineDistance(memories.embedding, embedding)
 
     const rows = await database
@@ -74,7 +71,7 @@ async function findNearbyMemories(
       .from(memories)
       .where(and(eq(memories.userId, userId), lte(distance, maxDist)))
       .orderBy(distance)
-      .limit(TOP_K)
+      .limit(env.MEMORY_EXTRACTION_TOP_K)
 
     for (const row of rows) {
       nearby.set(String(row.id), { id: row.id, text: row.content })
@@ -103,7 +100,7 @@ async function generateActions(existing: ExistingMemory[], facts: string[], idMa
 
   let actions = repairInvalidActions(await run(1), idMap)
 
-  for (let attempt = 1; attempt < RETRIES; attempt++) {
+  for (let attempt = 1; attempt < env.MEMORY_EXTRACTION_RETRIES; attempt++) {
     const invalid = actions.filter((action) => action.event !== 'ADD' && action.event !== 'NONE' && !idMap.has(action.id))
     if (invalid.length === 0) break
 

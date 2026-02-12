@@ -62,10 +62,10 @@ describe('memory service unit', () => {
       ]],
     })
 
-    const enqueueMemoryExtraction = mock(async (_payload: { userId: string }) => {})
+    const enqueueMemoryExtraction = mock(async (_payload: { userId: string }) => { })
     const service = createMemoryService({
       database,
-      enqueueMemoryExtraction,
+      enqueueMemory: enqueueMemoryExtraction,
       userId: 'u1',
     })
 
@@ -88,10 +88,10 @@ describe('memory service unit', () => {
       selectResults: [rows],
     })
 
-    const enqueueMemoryExtraction = mock(async (_payload: { userId: string }) => {})
+    const enqueueMemoryExtraction = mock(async (_payload: { userId: string }) => { })
     const service = createMemoryService({
       database,
-      enqueueMemoryExtraction,
+      enqueueMemory: enqueueMemoryExtraction,
       userId: 'u1',
     })
 
@@ -103,11 +103,11 @@ describe('memory service unit', () => {
 
   test('enqueueMemoryExtraction enqueues with scoped userId', async () => {
     const { database } = createMockDatabase()
-    const enqueueMemoryExtraction = mock(async (_payload: { userId: string }) => {})
+    const enqueueMemoryExtraction = mock(async (_payload: { userId: string }) => { })
 
     const service = createMemoryService({
       database,
-      enqueueMemoryExtraction,
+      enqueueMemory: enqueueMemoryExtraction,
       userId: 'u1',
     })
 

@@ -1,6 +1,7 @@
 import { drizzle } from 'drizzle-orm/node-postgres'
 import { migrate } from 'drizzle-orm/node-postgres/migrator'
 import { Pool } from 'pg'
+import { env } from '../src/env'
 
 type RunMigrationsOptions = {
   migrationsFolder?: string
@@ -8,14 +9,10 @@ type RunMigrationsOptions = {
   retryDelayMs?: number
 }
 
-const DEFAULT_TIMEOUT_MS = 30_000
-const DEFAULT_RETRY_DELAY_MS = 500
-const DEFAULT_MIGRATIONS_FOLDER = './drizzle'
-
 export async function runMigrations(databaseUrl: string, options: RunMigrationsOptions = {}) {
-  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
-  const retryDelayMs = options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS
-  const migrationsFolder = options.migrationsFolder ?? DEFAULT_MIGRATIONS_FOLDER
+  const timeoutMs = options.timeoutMs ?? env.MIGRATIONS_TIMEOUT_MS
+  const retryDelayMs = options.retryDelayMs ?? env.MIGRATIONS_RETRY_DELAY_MS
+  const migrationsFolder = options.migrationsFolder ?? env.MIGRATIONS_FOLDER
   const startedAt = Date.now()
   let lastError: unknown = null
 
@@ -39,11 +36,5 @@ export async function runMigrations(databaseUrl: string, options: RunMigrationsO
 }
 
 if (import.meta.main) {
-  const databaseUrl = process.env.DATABASE_URL
-
-  if (!databaseUrl) {
-    throw new Error('DATABASE_URL is required')
-  }
-
-  await runMigrations(databaseUrl)
+  await runMigrations(env.DATABASE_URL)
 }

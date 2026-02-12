@@ -2,12 +2,9 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type Redis from 'ioredis'
 
 import type * as schema from '../db/schema'
+import { env } from '../env'
 import { createBullMqService } from '../queue'
 import { extractMemory } from './extraction'
-
-const MEMORY_EXTRACTION_QUEUE = 'memory-extraction'
-const MEMORY_EXTRACTION_JOB = 'memory.extract'
-const DEBOUNCE_DELAY_MS = 3_000
 
 type MemoryExtractionJob = {
   userId: string
@@ -16,7 +13,7 @@ type MemoryExtractionJob = {
 type Database = NodePgDatabase<typeof schema>
 
 export type MemoryExtractionQueue = {
-  enqueueMemoryExtraction: (payload: MemoryExtractionJob) => Promise<void>
+  enqueue: (payload: MemoryExtractionJob) => Promise<void>
   close: () => Promise<void>
 }
 
@@ -27,16 +24,16 @@ function isDuplicateJobError(error: unknown): boolean {
 
 export function createMemoryExtractionQueue(redisClient: Redis, database: Database): MemoryExtractionQueue {
   const service = createBullMqService<MemoryExtractionJob, void, string>({
-    queueName: MEMORY_EXTRACTION_QUEUE,
+    queueName: env.MEMORY_QUEUE_NAME,
     connection: redisClient,
     closeConnectionOnClose: true,
     defaultJobOptions: {
       removeOnComplete: true,
       removeOnFail: 100,
-      attempts: 3,
+      attempts: env.MEMORY_QUEUE_ATTEMPTS,
       backoff: {
         type: 'exponential',
-        delay: 1_000,
+        delay: env.MEMORY_QUEUE_BACKOFF_DELAY_MS,
       },
     },
     worker: {
@@ -44,19 +41,19 @@ export function createMemoryExtractionQueue(redisClient: Redis, database: Databa
         await extractMemory(database, job.data.userId)
       },
       options: {
-        concurrency: 1,
+        concurrency: env.MEMORY_QUEUE_WORKER_CONCURRENCY,
       },
     },
   })
 
   return {
-    enqueueMemoryExtraction: async ({ userId }) => {
+    enqueue: async ({ userId }) => {
       const jobId = `memory-${userId}`
 
       try {
-        await service.enqueue(MEMORY_EXTRACTION_JOB, { userId }, {
+        await service.enqueue(env.MEMORY_QUEUE_JOB_NAME, { userId }, {
           jobId,
-          delay: DEBOUNCE_DELAY_MS,
+          delay: env.MEMORY_QUEUE_DEBOUNCE_DELAY_MS,
         })
       } catch (error) {
         if (isDuplicateJobError(error)) return

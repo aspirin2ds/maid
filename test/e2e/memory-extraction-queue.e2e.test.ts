@@ -113,7 +113,7 @@ describe('Memory extraction queue e2e', () => {
         { role: 'user', content: 'I live in Seattle and love hiking on weekends.' },
       ])
 
-      await env!.memoryExtractionQueue.enqueueMemoryExtraction({ userId: TEST_USER_ID })
+      await env!.memoryExtractionQueue.enqueue({ userId: TEST_USER_ID })
 
       const queuedJob = await inspectorQueue!.getJob(JOB_ID)
       expect(queuedJob).not.toBeNull()
@@ -153,8 +153,8 @@ describe('Memory extraction queue e2e', () => {
         { role: 'assistant', content: 'Mochi is a cute name.' },
       ])
 
-      await env!.memoryExtractionQueue.enqueueMemoryExtraction({ userId: TEST_USER_ID })
-      await env!.memoryExtractionQueue.enqueueMemoryExtraction({ userId: TEST_USER_ID })
+      await env!.memoryExtractionQueue.enqueue({ userId: TEST_USER_ID })
+      await env!.memoryExtractionQueue.enqueue({ userId: TEST_USER_ID })
 
       const jobs = await inspectorQueue!.getJobs(['delayed', 'waiting', 'active'])
       const matchingJobs = jobs.filter((job) => String(job.id) === JOB_ID)
@@ -179,7 +179,7 @@ describe('Memory extraction queue e2e', () => {
         { role: 'user', content: 'I am learning Spanish.' },
       ])
 
-      await env!.memoryExtractionQueue.enqueueMemoryExtraction({ userId: TEST_USER_ID })
+      await env!.memoryExtractionQueue.enqueue({ userId: TEST_USER_ID })
 
       await Bun.sleep(500)
       await appendMessages(sessionId, [
@@ -188,7 +188,7 @@ describe('Memory extraction queue e2e', () => {
       ])
 
       // Second enqueue should be deduped while the delayed job is still pending.
-      await env!.memoryExtractionQueue.enqueueMemoryExtraction({ userId: TEST_USER_ID })
+      await env!.memoryExtractionQueue.enqueue({ userId: TEST_USER_ID })
 
       const jobs = await inspectorQueue!.getJobs(['delayed', 'waiting', 'active'])
       const matchingJobs = jobs.filter((job) => String(job.id) === JOB_ID)

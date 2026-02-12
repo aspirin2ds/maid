@@ -1,16 +1,18 @@
-import 'dotenv/config'
-
 import { Hono, type Context } from 'hono'
 import { createMiddleware } from 'hono/factory'
-import { upgradeWebSocket, websocket } from 'hono/bun'
+import { websocket } from 'hono/bun'
 import { sql } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/node-postgres'
 import Redis from 'ioredis'
 import { Pool } from 'pg'
+import { z } from 'zod'
 
 import { env } from './env'
 import type { AppEnv, BetterAuthSessionResponse } from './types'
+import { generateText } from './llm'
 import { createMemoryExtractionQueue } from './memory/queue'
+import { createMemoryService } from './memory'
+import { createSessionService } from './session'
 
 import * as schema from './db/schema'
 const databaseClient = new Pool({ connectionString: env.DATABASE_URL })
@@ -21,6 +23,12 @@ const memoryExtractionQueue = createMemoryExtractionQueue(redisClient.duplicate(
 
 const app = new Hono<AppEnv>()
 let isShuttingDown = false
+
+const chatRequestSchema = z.object({
+  input: z.string().trim().min(1),
+  maid: z.string().trim().min(1).default('default'),
+  sessionId: z.number().int().positive().optional(),
+})
 
 const unauthorized = (context: Context<AppEnv>) => {
   context.header('WWW-Authenticate', 'Bearer')
@@ -81,15 +89,109 @@ const requireAuth = createMiddleware(async (c, next) => {
   await next()
 })
 
+const withUserServices = createMiddleware(async (c, next) => {
+  const userId = c.get('userId')
+
+  c.set('sessionService', createSessionService({
+    database,
+    redisClient,
+    userId,
+  }))
+
+  c.set('memoryService', createMemoryService({
+    database,
+    userId,
+    enqueueMemory: memoryExtractionQueue.enqueue,
+  }))
+
+  await next()
+})
+
 app.get(
   '/stream/:maid',
   requireAuth,
   async (c) => {
-    const sessionId = c.req.query("session")
+    const sessionId = c.req.query('session')
+    return c.json({
+      ok: false,
+      message: 'Streaming route scaffold. Use POST /chat/example for a working session + memory flow.',
+      sessionId: sessionId ? Number(sessionId) : null,
+    }, 501)
   },
 )
 
 app.get('/', (c) => c.text('Hello, Maid!'))
+
+app.post('/chat/example', requireAuth, withUserServices, async (c) => {
+  const body = await c.req.json().catch(() => null)
+  const parsed = chatRequestSchema.safeParse(body)
+
+  if (!parsed.success) {
+    return c.json({
+      error: 'Invalid request body',
+      details: z.treeifyError(parsed.error),
+    }, 400)
+  }
+
+  const { input, maid, sessionId } = parsed.data
+  const sessionService = c.get('sessionService')
+  const memoryService = c.get('memoryService')
+
+  const session = await sessionService.ensure(sessionId)
+
+  await session.saveMessage({
+    role: 'user',
+    content: input,
+    metadata: { maid },
+  })
+
+  const [relatedMemories, recentMessages] = await Promise.all([
+    memoryService.getRelatedMemories(input),
+    session.listRecentMessages(12, true),
+  ])
+
+  const memoryContext = relatedMemories.length === 0
+    ? '- none'
+    : relatedMemories.map((memory, index) => `- [${index + 1}] ${memory.content}`).join('\n')
+
+  const recentConversation = recentMessages
+    .slice(-12)
+    .map((message) => `${message.role}: ${message.content}`)
+    .join('\n')
+
+  const prompt = [
+    `You are Maid "${maid}".`,
+    'Answer the user in a concise and helpful way.',
+    'Use the memory context only when relevant.',
+    '',
+    'Memory context:',
+    memoryContext,
+    '',
+    'Recent conversation:',
+    recentConversation,
+    '',
+    `Latest user message: ${input}`,
+  ].join('\n')
+
+  const reply = await generateText(prompt)
+
+  await session.saveMessage({
+    role: 'assistant',
+    content: reply,
+    metadata: { maid },
+  })
+
+  await memoryService.enqueueMemoryExtraction()
+
+  return c.json({
+    sessionId: session.id,
+    reply,
+    usedMemories: relatedMemories.map((memory) => ({
+      id: memory.id,
+      similarity: memory.similarity,
+    })),
+  })
+})
 
 app.get('/db/health', async (context) => {
   const result = await database.execute<{ ok: number }>(sql`select 1 as ok`)
@@ -122,7 +224,7 @@ async function gracefulShutdown(signal: string) {
   const timeout = setTimeout(() => {
     console.error('[shutdown] timed out, forcing exit')
     process.exit(1)
-  }, 10_000)
+  }, env.APP_SHUTDOWN_TIMEOUT_MS)
   timeout.unref?.()
 
   try {

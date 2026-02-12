@@ -50,7 +50,7 @@ export async function structuredResponse<T extends ZodType>(
       model: env.OLLAMA_GENERATE_MODEL,
       prompt,
       format: toJSONSchema(schema),
-      keep_alive: "-1m"
+      keep_alive: env.OLLAMA_KEEP_ALIVE,
     })
     logger.info({
       fn: 'structuredResponse',
@@ -78,7 +78,7 @@ export async function generateText(prompt: string, think: boolean = false): Prom
       model: env.OLLAMA_GENERATE_MODEL,
       prompt,
       think,
-      keep_alive: "-1m",
+      keep_alive: env.OLLAMA_KEEP_ALIVE,
     })
     logger.info({
       fn: 'generateText',
@@ -111,7 +111,9 @@ export async function generateEmbeddings(input: string | string[]) {
   const start = Date.now()
   try {
     const response = await ollama.embed({
-      model: env.OLLAMA_EMBEDDING_MODEL, input, keep_alive: "-1m"
+      model: env.OLLAMA_EMBEDDING_MODEL,
+      input,
+      keep_alive: env.OLLAMA_KEEP_ALIVE,
     })
     logger.info({
       fn: 'generateEmbeddings',
