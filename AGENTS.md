@@ -2,22 +2,28 @@
 
 ## Project Structure & Module Organization
 - `src/` contains runtime code.
-- `src/index.ts` defines the Hono app and HTTP routes.
-- `src/db/` contains Drizzle DB client and schema definitions.
-- `src/redis/` contains Redis client setup.
-- `test/` contains integration-style tests (currently `websocket-real-env.test.ts`).
+- `src/index.ts` defines the Hono app, auth middleware, health routes, and graceful shutdown.
+- `src/db/schema.ts` defines Drizzle tables/enums (`sessions`, `messages`, `memories`).
+- `src/session.ts` contains session/message persistence service logic.
+- `src/memory/` contains memory extraction logic, queue orchestration, and prompting.
+- `src/llm.ts` contains OpenAI/Ollama integration helpers.
+- `src/queue.ts` contains reusable BullMQ queue setup.
+- `test/unit/` contains isolated unit tests for services.
+- `test/e2e/` contains Testcontainers-backed end-to-end tests.
 - `drizzle/` stores generated SQL migrations; `drizzle.config.ts` configures migration tooling.
-- `docker/` and `docker-compose.yml` define local infrastructure (Postgres + Redis).
+- `scripts/migrate.ts` applies migrations and ensures `pgvector` extension availability.
+- `docker/` and `docker-compose.yml` define local infrastructure (Postgres + Redis + migrator/app services).
 
 ## Build, Test, and Development Commands
 - `bun install`: install dependencies.
 - `cp .env.example .env`: create local environment config.
+- `bun run dev:infra`: start Postgres and Redis with Docker Compose.
 - `bun run dev`: run the app with hot reload.
 - `bun run start`: run the app without hot reload.
-- `bun run test`: run the full Bun test suite.
-- `bun run test:real-env`: run the Testcontainers-backed environment test.
-- `bun run start:infra`: start Postgres and Redis via Docker Compose.
-- `bun run db:generate` and `bun run db:migrate`: generate and apply Drizzle migrations.
+- `bun run test:unit`: run unit tests from `test/unit`.
+- `bun run test:e2e`: run e2e tests from `test/e2e` (Docker required).
+- `bun run db:generate`: generate Drizzle migrations.
+- `bun run db:migrate`: apply Drizzle migrations.
 
 ## Coding Style & Naming Conventions
 - Language: TypeScript with strict mode enabled (`tsconfig.json`).
@@ -32,10 +38,12 @@
 - Framework: Bun test runner (`bun:test`).
 - Keep tests deterministic and isolated; clean up containers/connections in `afterAll`.
 - Name tests by behavior (for example, `connects to postgres`).
-- Add tests in `test/*.test.ts`; group related cases with `describe()` blocks.
-- E2E policy: use real services only (no LLM/provider mocks in E2E tests).
-- E2E policy: provision Postgres and Redis with Testcontainers for each test suite.
-- E2E policy: OpenAI and Ollama in E2E tests must use the same provider settings from `.env`.
+- Add unit tests under `test/unit/*.test.ts` and e2e tests under `test/e2e/*.test.ts`.
+- Group related cases with `describe()` blocks.
+- Unit policy: mock external providers where appropriate (for example `src/llm` in service unit tests).
+- E2E policy: use real infrastructure via Testcontainers (Postgres + Redis).
+- E2E policy: clean DB/queue state in `beforeEach` to avoid cross-test contamination.
+- E2E policy: tests that exercise extraction rely on configured LLM providers from `.env`.
 
 ## Commit & Pull Request Guidelines
 - Current history is minimal (`init`), so adopt a consistent style now.
@@ -50,3 +58,4 @@
 - Never commit secrets; keep real values only in `.env`.
 - Validate required env vars through `src/env.ts` before starting services.
 - For local infra changes, prefer updating `docker-compose.yml` over ad hoc container commands.
+- Keep `DATABASE_URL` and `REDIS_URL` aligned with how services are addressed in the active environment (host vs Compose network).

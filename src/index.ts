@@ -93,7 +93,7 @@ app.get('/', (c) => c.text('Hello, Maid!'))
 
 app.get('/db/health', async (context) => {
   const result = await database.execute<{ ok: number }>(sql`select 1 as ok`)
-  const ok = result[0]?.ok === 1
+  const ok = result.rows[0]?.ok === 1
 
   return context.json({ ok })
 })

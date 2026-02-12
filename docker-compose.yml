@@ -47,7 +47,6 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - ./docker/postgres/init/01-enable-vector.sql:/docker-entrypoint-initdb.d/01-enable-vector.sql:ro
       - postgres_data:/var/lib/postgresql
 
   redis:
