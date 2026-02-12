@@ -1,9 +1,9 @@
 import 'dotenv/config'
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
-import { eq, sql } from 'drizzle-orm'
-import { drizzle } from 'drizzle-orm/postgres-js'
-import { migrate } from 'drizzle-orm/postgres-js/migrator'
-import postgres from 'postgres'
+import { eq } from 'drizzle-orm'
+import { drizzle } from 'drizzle-orm/node-postgres'
+import { migrate } from 'drizzle-orm/node-postgres/migrator'
+import { Pool } from 'pg'
 import { GenericContainer, Wait } from 'testcontainers'
 
 import * as schema from '../../src/db/schema'
@@ -14,7 +14,7 @@ const USER_ID = 'user_test'
 
 let postgresContainer: Awaited<ReturnType<GenericContainer['start']>> | null = null
 let database: ReturnType<typeof drizzle<typeof schema>> | null = null
-let databaseClient: ReturnType<typeof postgres> | null = null
+let databaseClient: Pool | null = null
 
 async function setupPostgres() {
   postgresContainer = await new GenericContainer('pgvector/pgvector:pg18')
@@ -35,16 +35,16 @@ async function setupPostgres() {
   let lastError: unknown = null
 
   while (Date.now() - startedAt < timeoutMs) {
-    const client = postgres(databaseUrl)
+    const client = new Pool({ connectionString: databaseUrl })
     try {
-      await client`CREATE EXTENSION IF NOT EXISTS vector`
+      await client.query('CREATE EXTENSION IF NOT EXISTS vector')
       const migrationDb = drizzle(client)
       await migrate(migrationDb, { migrationsFolder: './drizzle' })
-      await client.end({ timeout: 5 })
+      await client.end()
       break
     } catch (error) {
       lastError = error
-      await client.end({ timeout: 5 })
+      await client.end()
       await Bun.sleep(500)
       if (Date.now() - startedAt >= timeoutMs) {
         throw new Error(`Failed to setup database: ${String(lastError)}`)
@@ -52,7 +52,7 @@ async function setupPostgres() {
     }
   }
 
-  databaseClient = postgres(databaseUrl)
+  databaseClient = new Pool({ connectionString: databaseUrl })
   database = drizzle(databaseClient, { schema })
 }
 
@@ -79,15 +79,6 @@ async function getAllMemories(database: ReturnType<typeof drizzle<typeof schema>
   return database.select({ id: memories.id, content: memories.content }).from(memories).where(eq(memories.userId, USER_ID))
 }
 
-async function getUnextractedCount(database: ReturnType<typeof drizzle<typeof schema>>) {
-  const rows = await database
-    .select({ count: sql<number>`count(*)` })
-    .from(messages)
-    .innerJoin(sessions, eq(messages.sessionId, sessions.id))
-    .where(eq(sessions.userId, USER_ID))
-  return Number(rows[0].count)
-}
-
 async function cleanTables(database: ReturnType<typeof drizzle<typeof schema>>) {
   await database.delete(memories).where(eq(memories.userId, USER_ID))
   await database.delete(messages)
@@ -100,7 +91,7 @@ describe('Memory extraction e2e', () => {
   }, 120_000)
 
   afterAll(async () => {
-    if (databaseClient) await databaseClient.end({ timeout: 5 })
+    if (databaseClient) await databaseClient.end()
     if (postgresContainer) {
       await postgresContainer.stop()
       postgresContainer = null

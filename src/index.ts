@@ -4,18 +4,20 @@ import { Hono, type Context } from 'hono'
 import { createMiddleware } from 'hono/factory'
 import { upgradeWebSocket, websocket } from 'hono/bun'
 import { sql } from 'drizzle-orm'
-import { drizzle } from 'drizzle-orm/postgres-js'
-import postgres from 'postgres'
+import { drizzle } from 'drizzle-orm/node-postgres'
 import Redis from 'ioredis'
+import { Pool } from 'pg'
 
 import { env } from './env'
 import type { AppEnv, BetterAuthSessionResponse } from './types'
+import { createMemoryExtractionQueue } from './memory/queue'
 
 import * as schema from './db/schema'
-const databaseClient = postgres(env.DATABASE_URL)
+const databaseClient = new Pool({ connectionString: env.DATABASE_URL })
 const database = drizzle(databaseClient, { schema })
 
 const redisClient = new Redis(env.REDIS_URL, { lazyConnect: true })
+const memoryExtractionQueue = createMemoryExtractionQueue(redisClient.duplicate({ maxRetriesPerRequest: null }), database)
 
 const app = new Hono<AppEnv>()
 let isShuttingDown = false
@@ -82,7 +84,8 @@ const requireAuth = createMiddleware(async (c, next) => {
 app.get(
   '/stream/:maid',
   requireAuth,
-  async (c, next) => {
+  async (c) => {
+    const sessionId = c.req.query("session")
   },
 )
 
@@ -99,8 +102,9 @@ app.get('/redis/health', async (context) => context.json({ ok: (await redisClien
 
 async function closeResources() {
   const results = await Promise.allSettled([
+    memoryExtractionQueue.close(),
     redisClient.quit(),
-    databaseClient.end({ timeout: 5 }),
+    databaseClient.end(),
   ])
 
   const rejected = results.filter((result) => result.status === 'rejected')

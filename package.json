@@ -5,8 +5,7 @@
     "dev": "bun run --hot src/index.ts",
     "start": "bun run src/index.ts",
     "test:unit": "bun test test/unit",
-    "test:integration": "if ! docker info >/dev/null 2>&1; then echo 'Docker is required for integration tests (Testcontainers).'; exit 1; fi; TESTCONTAINERS_RYUK_DISABLED=true bun test test/integration/session.unit.test.ts && TESTCONTAINERS_RYUK_DISABLED=true bun test test/integration/chat-session.unit.test.ts && TESTCONTAINERS_RYUK_DISABLED=true bun test test/integration/memory-queue-debounce.unit.test.ts",
-    "test:e2e": "if ! docker info >/dev/null 2>&1; then echo 'Docker is required for e2e tests.'; exit 1; fi; TESTCONTAINERS_RYUK_DISABLED=true bun test test/e2e --max-concurrency 1",
+    "test:e2e": "if ! docker info >/dev/null 2>&1; then echo 'Docker is required for e2e tests.'; exit 1; fi; bun test test/e2e --max-concurrency 1",
     "test:all": "bun run test:unit && bun run test:integration && bun run test:e2e",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate"
@@ -21,11 +20,14 @@
     "openai": "^6.21.0",
     "pino": "^10.3.1",
     "pino-roll": "^4.0.0",
-    "postgres": "^3.4.8",
+    "pg": "^8.16.3",
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@testcontainers/postgresql": "^11.11.0",
+    "@testcontainers/redis": "^11.11.0",
     "@types/bun": "latest",
+    "@types/pg": "^8.16.0",
     "drizzle-kit": "^0.31.9",
     "testcontainers": "^11.11.0"
   }

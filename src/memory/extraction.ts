@@ -1,5 +1,5 @@
 import { and, cosineDistance, eq, inArray, isNull, lte } from 'drizzle-orm'
-import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js'
+import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 
 import type * as schema from '../db/schema'
 import { memories, messages, sessions, toSqlVector } from '../db/schema'
@@ -16,7 +16,7 @@ const THRESHOLD = 0.7
 const TOP_K = 5
 const RETRIES = 3
 
-type Database = PostgresJsDatabase<typeof schema>
+type Database = NodePgDatabase<typeof schema>
 
 type ExistingMemory = { id: string; text: string }
 type MemoryIdMap = Map<string, number>
