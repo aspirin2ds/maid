@@ -1,12 +1,20 @@
 services:
-  migrator:
+  migrate:
     build:
       context: .
       dockerfile: Dockerfile
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/maid
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: ${POSTGRES_PORT}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      REDIS_HOST: redis
+      REDIS_PORT: ${REDIS_PORT}
+      REDIS_USER: ${REDIS_USER}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
     command: ["bun", "run", "scripts/migrate.ts"]
     depends_on:
       postgres:
@@ -19,46 +27,63 @@ services:
     env_file:
       - .env
     environment:
-      PORT: 3000
-      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/maid
-      REDIS_URL: redis://redis:6379
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: ${POSTGRES_PORT}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      REDIS_HOST: redis
+      REDIS_PORT: ${REDIS_PORT}
+      REDIS_USER: ${REDIS_USER}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
     command: ["bun", "run", "start"]
     depends_on:
-      migrator:
+      migrate:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     ports:
-      - "3000:3000"
+      - "${PORT}:${PORT}"
 
   postgres:
     image: pgvector/pgvector:pg18
+    command: ["postgres", "-c", "port=${POSTGRES_PORT}"]
     environment:
-      POSTGRES_DB: maid
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d maid"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB} -p ${POSTGRES_PORT}"]
       interval: 5s
       timeout: 5s
       retries: 10
-    ports:
-      - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql
+      - postgres_data:/var/lib/postgresql/data
 
   redis:
     image: redis:alpine
-    command: ["redis-server", "--appendonly", "yes"]
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --port
+      - ${REDIS_PORT}
+      - --user
+      - ${REDIS_USER}
+      - "on"
+      - ">${REDIS_PASSWORD}"
+      - allcommands
+      - allkeys
+      - --user
+      - default
+      - "off"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-u", "redis://${REDIS_USER}:${REDIS_PASSWORD}@localhost:${REDIS_PORT}", "ping"]
       interval: 5s
       timeout: 3s
       retries: 10
-    ports:
-      - "6379:6379"
     volumes:
       - redis_data:/data
 

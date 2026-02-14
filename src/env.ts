@@ -26,10 +26,29 @@ function getNumber(name: string, fallback: number): number {
   return parsed
 }
 
+function buildDatabaseUrl(): string {
+  const user = getRequired('POSTGRES_USER')
+  const password = getRequired('POSTGRES_PASSWORD')
+  const host = getRequired('POSTGRES_HOST')
+  const port = getOptional('POSTGRES_PORT') ?? '5432'
+  const database = getRequired('POSTGRES_DB')
+
+  return `postgresql://${encodeURIComponent(user)}:${encodeURIComponent(password)}@${host}:${port}/${database}`
+}
+
+function buildRedisUrl(): string {
+  const host = getRequired('REDIS_HOST')
+  const port = getOptional('REDIS_PORT') ?? '6379'
+  const user = getRequired('REDIS_USER')
+  const password = getRequired('REDIS_PASSWORD')
+
+  return `redis://${encodeURIComponent(user)}:${encodeURIComponent(password)}@${host}:${port}`
+}
+
 export const env = {
   // required
-  get DATABASE_URL() { return getRequired('DATABASE_URL') },
-  get REDIS_URL() { return getRequired('REDIS_URL') },
+  get DATABASE_URL() { return buildDatabaseUrl() },
+  get REDIS_URL() { return buildRedisUrl() },
 
   get BETTER_AUTH_URL() { return getRequired('BETTER_AUTH_URL') },
   get AUTH_ORIGIN() { return getRequired('AUTH_ORIGIN') },

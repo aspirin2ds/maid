@@ -26,8 +26,15 @@ App default URL: `http://localhost:3000`
 
 See `.env.example` for defaults. Required at runtime:
 
-- `DATABASE_URL`
-- `REDIS_URL`
+- `POSTGRES_USER`
+- `POSTGRES_PASSWORD`
+- `POSTGRES_HOST`
+- `POSTGRES_PORT`
+- `POSTGRES_DB`
+- `REDIS_USER`
+- `REDIS_PASSWORD`
+- `REDIS_HOST`
+- `REDIS_PORT`
 - `BETTER_AUTH_URL`
 - `AUTH_ORIGIN`
 - `OPENAI_API_KEY`
@@ -81,7 +88,7 @@ Optional tuning vars (all have defaults):
 
 - `postgres` (`pgvector/pgvector:pg18`)
 - `redis` (`redis:alpine`)
-- `migrator` (runs DB migrations)
+- `migrate` (runs DB migrations)
 - `app` (starts service after infra + migration are healthy)
 
 Run full stack:
@@ -89,6 +96,9 @@ Run full stack:
 ```sh
 docker compose up --build
 ```
+
+Note: for host-run development (`bun run dev`), keep `POSTGRES_HOST=localhost` and `REDIS_HOST=localhost` in `.env`.
+Compose services override these internally to `postgres`/`redis` when you run the full stack in Docker.
 
 ## Project Layout
 
