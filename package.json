@@ -6,7 +6,7 @@
     "start": "bun run src/index.ts",
     "test:unit": "bun test test/unit",
     "test:e2e": "if ! docker info >/dev/null 2>&1; then echo 'Docker is required for e2e tests.'; exit 1; fi; bun test test/e2e --max-concurrency 1",
-    "test:all": "bun run test:unit && bun run test:integration && bun run test:e2e",
+    "test:all": "bun run test:unit && bun run test:e2e",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "bun run scripts/migrate.ts"
   },
@@ -14,13 +14,13 @@
     "bullmq": "^5.67.3",
     "dotenv": "^17.2.4",
     "drizzle-orm": "^0.45.1",
-    "hono": "^4.11.9",
     "ioredis": "^5.9.2",
     "ollama": "^0.6.3",
     "openai": "^6.21.0",
+    "p-queue": "^9.1.0",
+    "pg": "^8.16.3",
     "pino": "^10.3.1",
     "pino-roll": "^4.0.0",
-    "pg": "^8.16.3",
     "zod": "^4.3.6"
   },
   "devDependencies": {

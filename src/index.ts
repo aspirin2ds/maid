@@ -1,131 +1,162 @@
-import { Hono, type Context } from 'hono'
-import { createMiddleware } from 'hono/factory'
-import { websocket } from 'hono/bun'
-import { sql } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/node-postgres'
 import Redis from 'ioredis'
 import { Pool } from 'pg'
 
 import { env } from './env'
-import type { AppEnv, BetterAuthSessionResponse } from './types'
 import { createMemoryService } from './memory'
 import { createMemoryExtractionQueue } from './memory/queue'
 import { createSessionService } from './session'
-import { streamWebSocket } from './ws'
+import { streamWebSocketHandlers } from './ws'
 
 import * as schema from './db/schema'
+import z from 'zod'
+import PQueue from 'p-queue'
 const databaseClient = new Pool({ connectionString: env.DATABASE_URL })
 const database = drizzle(databaseClient, { schema })
 
 const redisClient = new Redis(env.REDIS_URL, { lazyConnect: true })
 const memoryExtractionQueue = createMemoryExtractionQueue(redisClient.duplicate({ maxRetriesPerRequest: null }), database)
 
-const app = new Hono<AppEnv>()
 let isShuttingDown = false
+let closePromise: Promise<void> | null = null
 
-const unauthorized = (context: Context<AppEnv>) => {
-  context.header('WWW-Authenticate', 'Bearer')
-  return context.json({ error: 'Unauthorized' }, 401)
-}
-
-const authUnavailable = (context: Context<AppEnv>) => {
-  return context.json({ error: 'Auth service unavailable' }, 503)
-}
-
-function getAuthorizationHeader(context: Context<AppEnv>) {
-  const header = context.req.header('authorization')
-  if (header?.startsWith('Bearer ')) {
-    return header
-  }
-
-  // Browsers cannot set custom websocket headers, so allow token via query for /stream.
-  const token = context.req.query('token')
-  if (!token) {
-    return null
-  }
-
-  return token.startsWith('Bearer ') ? token : `Bearer ${token}`
-}
-
-const requireAuth = createMiddleware(async (c, next) => {
-  const authorization = getAuthorizationHeader(c)
-
-  if (!authorization?.startsWith('Bearer ')) {
-    return unauthorized(c)
-  }
-
-  const response = await fetch(new URL('/api/auth/get-session', env.BETTER_AUTH_URL), {
-    method: 'GET',
-    headers: {
-      authorization,
-      accept: 'application/json',
-      origin: env.AUTH_ORIGIN,
-    },
-  })
-
-  if (!response.ok) {
-    if (response.status === 401 || response.status === 403) {
-      return unauthorized(c)
-    }
-
-    console.error('Better Auth get-session failed', response.status)
-    return authUnavailable(c)
-  }
-
-  const sessionData = (await response.json()) as BetterAuthSessionResponse | null
-
-  if (!sessionData?.user?.id) {
-    return unauthorized(c)
-  }
-
-  c.set('userId', sessionData.user.id)
-  await next()
-})
-
-const withUserServices = createMiddleware(async (c, next) => {
-  const userId = c.get('userId')
-
-  c.set('sessionService', createSessionService({
+function createUserServices(userId: string) {
+  const sessionService = createSessionService({
     database,
     redisClient,
     userId,
-  }))
+  })
 
-  c.set('memoryService', createMemoryService({
+  const memoryService = createMemoryService({
     database,
     userId,
     enqueueMemory: memoryExtractionQueue.enqueue,
-  }))
+  })
 
-  await next()
-})
-
-app.get('/stream/:maid', requireAuth, withUserServices, streamWebSocket)
-
-app.get('/', (c) => c.text('Hello, Maid!'))
-
-app.get('/db/health', async (context) => {
-  const result = await database.execute<{ ok: number }>(sql`select 1 as ok`)
-  const ok = result.rows[0]?.ok === 1
-
-  return context.json({ ok })
-})
-
-app.get('/redis/health', async (context) => context.json({ ok: (await redisClient.ping()) === 'PONG' }))
-
-async function closeResources() {
-  const results = await Promise.allSettled([
-    memoryExtractionQueue.close(),
-    redisClient.quit(),
-    databaseClient.end(),
-  ])
-
-  const rejected = results.filter((result) => result.status === 'rejected')
-  if (rejected.length > 0) {
-    console.error('[shutdown] failed to close all resources', rejected)
-    throw new Error('Failed to close all resources')
+  return {
+    sessionService,
+    memoryService,
   }
 }
+
+const wsRequestBody = z.object({
+  authToken: z.string().min(1),
+  maidId: z.string().min(1),
+  sessionId: z.int().optional(),
+})
+
+const server = Bun.serve({
+  port: env.PORT,
+  websocket: streamWebSocketHandlers,
+  fetch: async (request, appServer) => {
+    const url = new URL(request.url)
+
+    if (url.pathname === '/' && request.method === "GET") {
+      return new Response('Hello, Maid!')
+    }
+
+    if (url.pathname === '/ws' && request.method === 'POST') {
+      let rawBody: unknown
+      try {
+        rawBody = await request.json()
+      } catch {
+        return Response.json({ message: 'Invalid JSON body' }, { status: 400 })
+      }
+
+      const parsedBody = wsRequestBody.safeParse(rawBody)
+      if (!parsedBody.success) {
+        return Response.json(
+          { message: parsedBody.error.issues.map((issue) => issue.message).join('; ') },
+          { status: 400 },
+        )
+      }
+
+      const { authToken, maidId, sessionId } = parsedBody.data
+
+      let authResp: Response
+      try {
+        authResp = await fetch(new URL('/api/auth/get-session', env.BETTER_AUTH_URL), {
+          method: 'GET',
+          headers: {
+            authorization: `Bearer ${authToken}`,
+            accept: 'application/json',
+            origin: env.AUTH_ORIGIN,
+          },
+        })
+      } catch (error) {
+        console.error('Better Auth get-session request failed', error)
+        return Response.json({ message: 'Better Auth unavailable' }, { status: 500 })
+      }
+
+      if (!authResp.ok) {
+        if (authResp.status === 401 || authResp.status === 403) {
+          return Response.json({ message: 'unauthorized' }, { status: 401 })
+        }
+        console.error('Better Auth get-session failed', authResp.status)
+        return Response.json({ message: 'Better Auth unavailable' }, { status: 500 })
+      }
+
+      let authSess: any
+      try {
+        authSess = await authResp.json()
+      } catch (error) {
+        console.error('Better Auth get-session returned invalid JSON', error)
+        return Response.json({ message: 'Better Auth unavailable' }, { status: 500 })
+      }
+
+      if (!authSess?.user?.id) {
+        return Response.json({ message: 'unauthorized' }, { status: 401 })
+      }
+
+      const { sessionService, memoryService } = createUserServices(authSess.user.id)
+
+      try {
+        const upgraded = appServer.upgrade(request, {
+          data: {
+            maidId: maidId,
+            sessionId: sessionId,
+            sessionService,
+            memoryService,
+
+            q: new PQueue({ concurrency: 1 }),
+            state: {
+              session: null,
+              stream: null
+            }
+          },
+        })
+
+        if (upgraded) return
+        return Response.json({ message: 'WebSocket upgrade failed' }, { status: 400 })
+      } catch (error) {
+        console.error('WebSocket upgrade failed with exception', error)
+        return Response.json({ message: 'WebSocket upgrade failed' }, { status: 500 })
+      }
+    }
+    return Response.json({ message: 'not found' }, { status: 404 })
+  },
+})
+
+async function closeResources() {
+  if (closePromise) return closePromise
+
+  closePromise = (async () => {
+    const results = await Promise.allSettled([
+      memoryExtractionQueue.close(),
+      redisClient.quit(),
+      databaseClient.end(),
+    ])
+
+    const rejected = results.filter((result) => result.status === 'rejected')
+    if (rejected.length > 0) {
+      console.error('[shutdown] failed to close all resources', rejected)
+      throw new Error('Failed to close all resources')
+    }
+  })()
+
+  return closePromise
+}
+
 
 async function gracefulShutdown(signal: string) {
   if (isShuttingDown) return
@@ -139,6 +170,7 @@ async function gracefulShutdown(signal: string) {
   timeout.unref?.()
 
   try {
+    await server.stop()
     await closeResources()
   } catch {
     clearTimeout(timeout)
@@ -159,8 +191,6 @@ process.once('SIGTERM', () => {
 })
 
 export default {
-  port: env.PORT,
-  fetch: app.fetch,
-  websocket,
+  server,
   close: closeResources,
 }

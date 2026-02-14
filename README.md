@@ -1,6 +1,6 @@
 # Maid
 
-Maid is a Bun + Hono backend with PostgreSQL (`pgvector`) and Redis.  
+Maid is a Bun backend (`Bun.serve` + native WebSocket) with PostgreSQL (`pgvector`) and Redis.  
 It stores chat sessions/messages and extracts long-term user memories through a debounced BullMQ worker.
 
 ## Requirements
@@ -92,7 +92,7 @@ docker compose up --build
 
 ## Project Layout
 
-- `src/index.ts`: app wiring, auth middleware, route definitions, shutdown handling
+- `src/index.ts`: Bun server wiring, auth checks, route definitions, shutdown handling
 - `src/db/schema.ts`: Drizzle schema (`sessions`, `messages`, `memories`)
 - `src/session.ts`: session/message persistence service
 - `src/memory/`: memory extraction, prompts, queue orchestration
