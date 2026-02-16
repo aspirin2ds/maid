@@ -4,6 +4,7 @@
     "dev:infra": "docker compose up -d postgres redis",
     "dev": "bun run --hot src/index.ts",
     "start": "bun run src/index.ts",
+    "cli": "bun run src/cli.ts",
     "test:unit": "bun test test/unit",
     "test:e2e": "if ! docker info >/dev/null 2>&1; then echo 'Docker is required for e2e tests.'; exit 1; fi; bun test test/e2e --max-concurrency 1",
     "test:all": "bun run test:unit && bun run test:e2e",

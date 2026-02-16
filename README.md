@@ -70,10 +70,27 @@ Optional tuning vars (all have defaults):
 - `bun run dev:infra`: start local Postgres + Redis with Docker Compose
 - `bun run dev`: run app with hot reload
 - `bun run start`: run app without hot reload
+- `bun run cli`: run CLI helpers (`login email`, `login phone`, `chat`, `logout`)
 - `bun run db:generate`: generate Drizzle migration files
 - `bun run db:migrate`: apply migrations (also ensures `vector` extension)
 - `bun run test:unit`: run unit tests in `test/unit`
 - `bun run test:e2e`: run e2e tests in `test/e2e` (Docker required)
+
+## CLI Testing Commands
+
+Use these commands for manual auth + websocket chat testing:
+
+```sh
+bun run cli login email
+bun run cli login phone
+bun run cli chat
+```
+
+Notes:
+
+- `cli chat` requires a saved token from one of the login commands.
+- token file defaults to `~/.maid-auth-token` (same default as `maid-auth` CLI).
+- set `MAID_BASE_URL` to your maid service base URL (default is `http://localhost:3001`).
 
 ## HTTP Routes
 

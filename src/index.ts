@@ -39,11 +39,69 @@ function createUserServices(userId: string) {
   }
 }
 
-const wsRequestBody = z.object({
+const wsRequestQuery = z.object({
   authToken: z.string().min(1),
   maidId: z.string().min(1),
-  sessionId: z.int().optional(),
+  sessionId: z.coerce.number().int().optional(),
 })
+
+type WsRequest = z.infer<typeof wsRequestQuery>
+
+function parseWsRequest(url: URL): WsRequest | Response {
+  const parsedQuery = wsRequestQuery.safeParse({
+    authToken: url.searchParams.get('authToken') ?? undefined,
+    maidId: url.searchParams.get('maidId') ?? undefined,
+    sessionId: url.searchParams.get('sessionId') ?? undefined,
+  })
+
+  if (!parsedQuery.success) {
+    return Response.json(
+      { message: parsedQuery.error.issues.map((issue) => issue.message).join('; ') },
+      { status: 400 },
+    )
+  }
+
+  return parsedQuery.data
+}
+
+async function getAuthUserId(authToken: string): Promise<string | Response> {
+  let authResp: Response
+  try {
+    authResp = await fetch(new URL('/api/auth/get-session', env.BETTER_AUTH_URL), {
+      method: 'GET',
+      headers: {
+        authorization: `Bearer ${authToken}`,
+        accept: 'application/json',
+        origin: env.AUTH_ORIGIN,
+      },
+    })
+  } catch (error) {
+    console.error('Better Auth get-session request failed', error)
+    return Response.json({ message: 'Better Auth unavailable' }, { status: 500 })
+  }
+
+  if (!authResp.ok) {
+    if (authResp.status === 401 || authResp.status === 403) {
+      return Response.json({ message: 'unauthorized' }, { status: 401 })
+    }
+    console.error('Better Auth get-session failed', authResp.status)
+    return Response.json({ message: 'Better Auth unavailable' }, { status: 500 })
+  }
+
+  let authSess: any
+  try {
+    authSess = await authResp.json()
+  } catch (error) {
+    console.error('Better Auth get-session returned invalid JSON', error)
+    return Response.json({ message: 'Better Auth unavailable' }, { status: 500 })
+  }
+
+  if (!authSess?.user?.id) {
+    return Response.json({ message: 'unauthorized' }, { status: 401 })
+  }
+
+  return authSess.user.id
+}
 
 const server = Bun.serve({
   port: env.PORT,
@@ -55,60 +113,16 @@ const server = Bun.serve({
       return new Response('Hello, Maid!')
     }
 
-    if (url.pathname === '/ws' && request.method === 'POST') {
-      let rawBody: unknown
-      try {
-        rawBody = await request.json()
-      } catch {
-        return Response.json({ message: 'Invalid JSON body' }, { status: 400 })
-      }
+    if (url.pathname === '/ws' && request.method === 'GET') {
+      const wsRequest = parseWsRequest(url)
+      if (wsRequest instanceof Response) return wsRequest
 
-      const parsedBody = wsRequestBody.safeParse(rawBody)
-      if (!parsedBody.success) {
-        return Response.json(
-          { message: parsedBody.error.issues.map((issue) => issue.message).join('; ') },
-          { status: 400 },
-        )
-      }
+      const { authToken, maidId, sessionId } = wsRequest
 
-      const { authToken, maidId, sessionId } = parsedBody.data
+      const userId = await getAuthUserId(authToken)
+      if (userId instanceof Response) return userId
 
-      let authResp: Response
-      try {
-        authResp = await fetch(new URL('/api/auth/get-session', env.BETTER_AUTH_URL), {
-          method: 'GET',
-          headers: {
-            authorization: `Bearer ${authToken}`,
-            accept: 'application/json',
-            origin: env.AUTH_ORIGIN,
-          },
-        })
-      } catch (error) {
-        console.error('Better Auth get-session request failed', error)
-        return Response.json({ message: 'Better Auth unavailable' }, { status: 500 })
-      }
-
-      if (!authResp.ok) {
-        if (authResp.status === 401 || authResp.status === 403) {
-          return Response.json({ message: 'unauthorized' }, { status: 401 })
-        }
-        console.error('Better Auth get-session failed', authResp.status)
-        return Response.json({ message: 'Better Auth unavailable' }, { status: 500 })
-      }
-
-      let authSess: any
-      try {
-        authSess = await authResp.json()
-      } catch (error) {
-        console.error('Better Auth get-session returned invalid JSON', error)
-        return Response.json({ message: 'Better Auth unavailable' }, { status: 500 })
-      }
-
-      if (!authSess?.user?.id) {
-        return Response.json({ message: 'unauthorized' }, { status: 401 })
-      }
-
-      const { sessionService, memoryService } = createUserServices(authSess.user.id)
+      const { sessionService, memoryService } = createUserServices(userId)
 
       try {
         const upgraded = appServer.upgrade(request, {
@@ -136,6 +150,19 @@ const server = Bun.serve({
     return Response.json({ message: 'not found' }, { status: 404 })
   },
 })
+
+function logStartupInfo() {
+  console.log('[startup] maid server started')
+  console.log(`[startup] pid=${process.pid}`)
+  console.log(`[startup] port=${env.PORT}`)
+  console.log(`[startup] http=http://localhost:${env.PORT}/`)
+  console.log(`[startup] ws=ws://localhost:${env.PORT}/ws`)
+  console.log(`[startup] database=${env.DATABASE_URL}`)
+  console.log(`[startup] redis=${env.REDIS_URL}`)
+  console.log(`[startup] better_auth=${env.BETTER_AUTH_URL}`)
+}
+
+logStartupInfo()
 
 async function closeResources() {
   if (closePromise) return closePromise
