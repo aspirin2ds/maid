@@ -9,7 +9,7 @@ type ServerMessage =
   | { type: 'chat.delta'; delta: string }
   | { type: 'chat.done'; sessionId: number }
   | { type: 'chat.session_created'; sessionId: number }
-  | { type: 'error'; message: string }
+  | { type: 'chat.error'; message: string }
 
 const AUTH_BASE_URL = process.env.BETTER_AUTH_URL ?? 'http://localhost:3000'
 const MAID_BASE_URL = process.env.MAID_BASE_URL ?? 'http://localhost:3010'
@@ -165,7 +165,7 @@ async function chat(options: ChatOptions = {}) {
   let closed = false
   const openPromise = new Promise<void>((resolve, reject) => {
     ws.onopen = () => resolve()
-    ws.onerror = (err) => reject(err.message)
+    ws.onerror = () => reject(new Error('WebSocket error during connect'))
   })
 
   ws.onmessage = (event) => {
@@ -224,7 +224,7 @@ async function chat(options: ChatOptions = {}) {
     await openPromise
     console.log('Connected. Type a message and press Enter. Type "exit" to quit.')
 
-    ws.send(JSON.stringify({ type: 'chat.welcome' }))
+    ws.send(JSON.stringify({ type: 'welcome' }))
     await new Promise<number>((resolve, reject) => {
       pending = { printed: false, resolve, reject }
     })
@@ -236,14 +236,17 @@ async function chat(options: ChatOptions = {}) {
 
       if (pending) commandError('Previous request is still in progress')
 
-      ws.send(JSON.stringify({ type: 'chat.input', content: input }))
+      ws.send(JSON.stringify({ type: 'input', content: input }))
       await new Promise<number>((resolve, reject) => {
         pending = { printed: false, resolve, reject }
       })
     }
   } finally {
     rl.close()
-    if (!closed) ws.close()
+    if (!closed) {
+      ws.send(JSON.stringify({ type: 'bye' }))
+      ws.close()
+    }
   }
 }
 
@@ -261,11 +264,11 @@ async function welcome(options: WelcomeOptions = {}) {
 
   const donePromise = new Promise<number>((resolve, reject) => {
     ws.onopen = () => {
-      ws.send(JSON.stringify({ type: 'chat.welcome' }))
+      ws.send(JSON.stringify({ type: 'welcome' }))
     }
 
-    ws.onerror = (err) => {
-      reject(new Error(err.message))
+    ws.onerror = () => {
+      reject(new Error('WebSocket error'))
     }
 
     ws.onmessage = (event) => {
@@ -309,6 +312,9 @@ async function welcome(options: WelcomeOptions = {}) {
   try {
     await donePromise
   } finally {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'bye' }))
+    }
     ws.close()
   }
 }

@@ -4,23 +4,28 @@ import type { StreamSocketData } from './index'
 
 // -- Incoming message schemas ------------------------------------------------
 
-const chatInput = z.object({
-  type: z.literal("chat.input"),
+const input = z.object({
+  type: z.literal("input"),
   content: z.string().min(1),
 })
 
-const chatAbort = z.object({
-  type: z.literal("chat.abort"),
+const abort = z.object({
+  type: z.literal("abort"),
 })
 
-const chatWelcome = z.object({
-  type: z.literal("chat.welcome"),
+const welcome = z.object({
+  type: z.literal("welcome"),
+})
+
+const bye = z.object({
+  type: z.literal("bye"),
 })
 
 export const clientMessage = z.discriminatedUnion("type", [
-  chatInput,
-  chatAbort,
-  chatWelcome,
+  input,
+  abort,
+  welcome,
+  bye,
 ])
 
 export type ClientMessage = z.infer<typeof clientMessage>
@@ -35,28 +40,6 @@ export const serverMessage = z.discriminatedUnion("type", [
 ])
 
 export type ServerMessage = z.infer<typeof serverMessage>
-
-// -- Routing -----------------------------------------------------------------
-
-// Messages handled outside the queue (e.g. abort must not wait behind in-flight work)
-type ImmediateMessageType = "chat.abort"
-type QueuedMessageType = Exclude<ClientMessage["type"], ImmediateMessageType>
-
-type MessageHandler<T extends ClientMessage["type"]> = (
-  ws: ServerWebSocket<StreamSocketData>,
-  payload: Extract<ClientMessage, { type: T }>,
-) => void | Promise<void>
-
-type MessageRouter = {
-  [K in QueuedMessageType]: MessageHandler<K>
-}
-
-export function createRouter(handlers: MessageRouter) {
-  return (ws: ServerWebSocket<StreamSocketData>, msg: ClientMessage) => {
-    const handler = handlers[msg.type as QueuedMessageType] as MessageHandler<typeof msg.type>
-    return handler(ws, msg as any)
-  }
-}
 
 // -- Helpers -----------------------------------------------------------------
 
