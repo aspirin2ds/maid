@@ -92,7 +92,9 @@ const route = createRouter({
     const stream = streamResponse(input)
     ws.data.state.stream = stream
 
+    let streamedText = ""
     stream.on("response.output_text.delta", (event) => {
+      streamedText += event.delta
       send(ws, { type: "chat.delta", delta: event.delta })
     })
 
@@ -103,8 +105,7 @@ const route = createRouter({
       ws.data.state.stream = null
     }
 
-    // save assistant message and notify client
-    await session.saveMessage({ role: "assistant", content: response.output_text })
+    await session.saveMessage({ role: "assistant", content: streamedText.trim() })
     send(ws, { type: "chat.done", sessionId: session.id })
 
     // enqueue memory extraction in the background
@@ -149,11 +150,8 @@ export const streamWebSocketHandlers = {
       try {
         await route(ws, parsed)
       } catch (err) {
-        if (err instanceof Error) {
-          send(ws, { type: "error", message: err.message })
-          return
-        }
-        send(ws, { type: "error", message: "unknown error" })
+        console.error("WebSocket route error", err)
+        send(ws, { type: "error", message: "internal server error" })
       }
     })
   },

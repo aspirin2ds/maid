@@ -40,7 +40,7 @@ function createUserServices(userId: string) {
 }
 
 const wsRequestQuery = z.object({
-  authToken: z.string().min(1),
+  token: z.string().min(1),
   maidId: z.string().min(1),
   sessionId: z.coerce.number().int().optional(),
 })
@@ -48,8 +48,9 @@ const wsRequestQuery = z.object({
 type WsRequest = z.infer<typeof wsRequestQuery>
 
 function parseWsRequest(url: URL): WsRequest | Response {
+  const token = url.searchParams.get('token') ?? url.searchParams.get('authToken')
   const parsedQuery = wsRequestQuery.safeParse({
-    authToken: url.searchParams.get('authToken') ?? undefined,
+    token: token ?? undefined,
     maidId: url.searchParams.get('maidId') ?? undefined,
     sessionId: url.searchParams.get('sessionId') ?? undefined,
   })
@@ -64,13 +65,13 @@ function parseWsRequest(url: URL): WsRequest | Response {
   return parsedQuery.data
 }
 
-async function getAuthUserId(authToken: string): Promise<string | Response> {
+async function getAuthUserId(token: string): Promise<string | Response> {
   let authResp: Response
   try {
     authResp = await fetch(new URL('/api/auth/get-session', env.BETTER_AUTH_URL), {
       method: 'GET',
       headers: {
-        authorization: `Bearer ${authToken}`,
+        authorization: `Bearer ${token}`,
         accept: 'application/json',
         origin: env.AUTH_ORIGIN,
       },
@@ -117,9 +118,9 @@ const server = Bun.serve({
       const wsRequest = parseWsRequest(url)
       if (wsRequest instanceof Response) return wsRequest
 
-      const { authToken, maidId, sessionId } = wsRequest
+      const { token, maidId, sessionId } = wsRequest
 
-      const userId = await getAuthUserId(authToken)
+      const userId = await getAuthUserId(token)
       if (userId instanceof Response) return userId
 
       const { sessionService, memoryService } = createUserServices(userId)

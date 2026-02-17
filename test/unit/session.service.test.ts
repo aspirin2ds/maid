@@ -62,7 +62,7 @@ function createMockDatabase(options: MockDbOptions = {}) {
 }
 
 describe('session service unit', () => {
-  test('create() without sessionId creates a session and saveMessage writes to that session', async () => {
+  test('ensure() without sessionId creates a session and saveMessage writes to that session', async () => {
     const { database, insertValues } = createMockDatabase({
       insertResults: [
         [{ id: 42 }],
@@ -76,7 +76,7 @@ describe('session service unit', () => {
       userId: 'u1',
     })
 
-    const session = await service.create()
+    const session = await service.ensure()
     expect(session.id).toBe(42)
 
     await session.saveMessage({ role: 'user', content: 'hello' })
@@ -85,7 +85,7 @@ describe('session service unit', () => {
     expect(insertValues[1]).toEqual({ sessionId: 42, role: 'user', content: 'hello', metadata: {} })
   })
 
-  test('create(sessionId) throws when session is not owned by user', async () => {
+  test('ensure(sessionId) throws when session is not owned by user', async () => {
     const { database } = createMockDatabase({
       selectResults: [[]],
     })
@@ -96,7 +96,7 @@ describe('session service unit', () => {
       userId: 'u1',
     })
 
-    await expect(service.create(999)).rejects.toThrow('Session 999 not found for user u1')
+    await expect(service.ensure(999)).rejects.toThrow('Session 999 not found for user u1')
   })
 
   test('listRecentMessages defaults to cross-session query (sameSession=false)', async () => {
@@ -114,7 +114,7 @@ describe('session service unit', () => {
       userId: 'u1',
     })
 
-    const session = await service.create(7)
+    const session = await service.ensure(7)
     const out = await session.listRecentMessages(3)
 
     expect(out).toEqual(rows)
@@ -137,7 +137,7 @@ describe('session service unit', () => {
       userId: 'u1',
     })
 
-    const session = await service.create(7)
+    const session = await service.ensure(7)
     const out = await session.listRecentMessages(2, true)
 
     expect(out).toEqual(rows)

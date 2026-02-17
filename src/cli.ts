@@ -11,7 +11,7 @@ type ServerMessage =
   | { type: 'error'; message: string }
 
 const AUTH_BASE_URL = process.env.BETTER_AUTH_URL ?? 'http://localhost:3000'
-const MAID_BASE_URL = process.env.MAID_BASE_URL ?? 'http://localhost:3001'
+const MAID_BASE_URL = process.env.MAID_BASE_URL ?? 'http://localhost:3010'
 const MAID_ID = process.env.MAID_ID ?? 'cli'
 const TOKEN_FILE = process.env.MAID_AUTH_TOKEN_FILE ?? join(homedir(), '.maid-auth-token')
 
@@ -104,7 +104,7 @@ type PendingResponse = {
 async function chat() {
   const token = await loadToken()
   const wsUrl = new URL(toWebSocketBaseUrl(MAID_BASE_URL))
-  wsUrl.searchParams.set('authToken', token)
+  wsUrl.searchParams.set('token', token)
   wsUrl.searchParams.set('maidId', MAID_ID)
 
   const rl = createInterface({ input: stdin, output: stdout })
@@ -116,7 +116,7 @@ async function chat() {
 
   const openPromise = new Promise<void>((resolve, reject) => {
     ws.onopen = () => resolve()
-    ws.onerror = () => reject(new Error('WebSocket connection failed'))
+    ws.onerror = (err) => reject(err.message)
   })
 
   ws.onmessage = (event) => {
