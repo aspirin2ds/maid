@@ -2,10 +2,18 @@ import type { ServerWebSocket } from 'bun'
 import { ZodError } from 'zod'
 import PQueue from 'p-queue'
 
-import { streamResponse } from '../llm'
+import type { streamResponse } from '../llm'
 import type { MemoryService } from '../memory'
 import type { Session } from '../session'
 import type { SessionService } from '../session'
+import {
+  buildChatInput,
+  buildWelcomeInput,
+  ensureSession,
+  handleAbort,
+  humanizeZodError,
+  streamAndSendAssistantResponse,
+} from './helpers'
 import { clientMessage, createRouter, send } from './schema'
 
 export type StreamSocketData = {
@@ -23,33 +31,42 @@ type StreamSocketState = {
   stream: ReturnType<typeof streamResponse> | null // current openai stream
 }
 
-function humanizeZodError(err: ZodError): string {
-  return err.issues
-    .map(i => {
-      const path = i.path.length ? i.path.join(".") : "root"
-      return `${path}: ${i.message}`
-    })
-    .join("\n")
-}
-
-function handleAbort(ws: ServerWebSocket<StreamSocketData>) {
-  const { stream } = ws.data.state
-  if (stream) {
-    stream.abort()
-    ws.data.state.stream = null
-  }
-  ws.data.q.clear()
-}
-
 const route = createRouter({
-  "chat.input": async (ws, msg) => {
-    const { sessionService, memoryService } = ws.data
-
-    // ensure session exists (create if needed)
-    if (!ws.data.state.session) {
-      ws.data.state.session = await sessionService.ensure(ws.data.sessionId)
+  "chat.welcome": async (ws) => {
+    const start = Date.now()
+    const { memoryService } = ws.data
+    const { session, created } = await ensureSession(ws)
+    if (created) {
+      send(ws, { type: "chat.session_created", sessionId: session.id })
     }
-    const session = ws.data.state.session
+
+    const [recentMessages, recentMemories] = await Promise.all([
+      session.listRecentMessages(20, false),
+      memoryService.listRecentUpdatedMemories(20),
+    ])
+
+    const input = buildWelcomeInput(recentMessages, recentMemories)
+    const assistantText = await streamAndSendAssistantResponse({
+      ws,
+      route: 'chat.welcome',
+      sessionId: session.id,
+      input,
+      start,
+    })
+
+    await session.saveMessage({ role: "assistant", content: assistantText })
+    send(ws, { type: "chat.done", sessionId: session.id })
+
+    memoryService.enqueueMemoryExtraction().catch(() => { })
+  },
+
+  "chat.input": async (ws, msg) => {
+    const start = Date.now()
+    const { memoryService } = ws.data
+    const { session, created } = await ensureSession(ws)
+    if (created) {
+      send(ws, { type: "chat.session_created", sessionId: session.id })
+    }
 
     // save user message
     await session.saveMessage({ role: "user", content: msg.content })
@@ -57,55 +74,19 @@ const route = createRouter({
     // build context from recent messages and related memories
     const [recentMessages, relatedMemories] = await Promise.all([
       session.listRecentMessages(20, true),
-      memoryService.getRelatedMemories(msg.content),
+      memoryService.getRelatedMemories(msg.content, { threshold: 0 }),
     ])
 
-    const parts: string[] = []
-
-    if (relatedMemories.length > 0) {
-      parts.push(
-        "<memories>",
-        ...relatedMemories.map(m => `- ${m.content}`),
-        "</memories>",
-        "",
-      )
-    }
-
-    if (recentMessages.length > 1) {
-      const history = recentMessages
-        .slice(1) // exclude the message we just saved (it's at index 0, desc order)
-        .reverse()
-        .map(m => `[${m.role}]: ${m.content}`)
-      parts.push(
-        "<history>",
-        ...history,
-        "</history>",
-        "",
-      )
-    }
-
-    parts.push(`[user]: ${msg.content}`)
-
-    const input = parts.join("\n")
-
-    // stream LLM response
-    const stream = streamResponse(input)
-    ws.data.state.stream = stream
-
-    let streamedText = ""
-    stream.on("response.output_text.delta", (event) => {
-      streamedText += event.delta
-      send(ws, { type: "chat.delta", delta: event.delta })
+    const input = buildChatInput(msg.content, recentMessages, relatedMemories)
+    const assistantText = await streamAndSendAssistantResponse({
+      ws,
+      route: 'chat.input',
+      sessionId: session.id,
+      input,
+      start,
     })
 
-    let response
-    try {
-      response = await stream.finalResponse()
-    } finally {
-      ws.data.state.stream = null
-    }
-
-    await session.saveMessage({ role: "assistant", content: streamedText.trim() })
+    await session.saveMessage({ role: "assistant", content: assistantText })
     send(ws, { type: "chat.done", sessionId: session.id })
 
     // enqueue memory extraction in the background
@@ -117,10 +98,10 @@ export const streamWebSocketHandlers = {
   data: {} as StreamSocketData,
 
   open(ws: ServerWebSocket<StreamSocketData>) {
-    ws.data.q.add(async () => {
-      // build a prompt by using recent messages and related memories
-      // then use llm.generateText to generate a custom welcome message and send to client
-    })
+    // ws.data.q.add(async () => {
+    // build a prompt by using recent messages and related memories
+    // then use llm.generateText to generate a custom welcome message and send to client
+    // })
   },
 
   message(ws: ServerWebSocket<StreamSocketData>, message: string | BufferSource) {

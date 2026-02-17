@@ -13,9 +13,14 @@ const chatAbort = z.object({
   type: z.literal("chat.abort"),
 })
 
+const chatWelcome = z.object({
+  type: z.literal("chat.welcome"),
+})
+
 export const clientMessage = z.discriminatedUnion("type", [
   chatInput,
   chatAbort,
+  chatWelcome,
 ])
 
 export type ClientMessage = z.infer<typeof clientMessage>
@@ -25,6 +30,7 @@ export type ClientMessage = z.infer<typeof clientMessage>
 export const serverMessage = z.discriminatedUnion("type", [
   z.object({ type: z.literal("chat.delta"), delta: z.string() }),
   z.object({ type: z.literal("chat.done"), sessionId: z.number() }),
+  z.object({ type: z.literal("chat.session_created"), sessionId: z.number() }),
   z.object({ type: z.literal("error"), message: z.string() }),
 ])
 

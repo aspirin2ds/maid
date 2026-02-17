@@ -8,6 +8,7 @@ import { stdin, stdout } from 'node:process'
 type ServerMessage =
   | { type: 'chat.delta'; delta: string }
   | { type: 'chat.done'; sessionId: number }
+  | { type: 'chat.session_created'; sessionId: number }
   | { type: 'error'; message: string }
 
 const AUTH_BASE_URL = process.env.BETTER_AUTH_URL ?? 'http://localhost:3000'
@@ -101,19 +102,67 @@ type PendingResponse = {
   reject: (error: Error) => void
 }
 
-async function chat() {
+type ChatOptions = {
+  sessionId?: number
+}
+
+function parseChatOptions(args: string[]): ChatOptions {
+  let sessionId: number | undefined
+
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i]
+
+    if (arg === '--session' || arg === '-s') {
+      const value = args[i + 1]
+      if (!value) commandError('Missing value for --session')
+      const parsed = Number(value)
+      if (!Number.isInteger(parsed) || parsed <= 0) {
+        commandError(`Invalid session id: ${value}`)
+      }
+      sessionId = parsed
+      i += 1
+      continue
+    }
+
+    if (arg.startsWith('--session=')) {
+      const value = arg.slice('--session='.length)
+      const parsed = Number(value)
+      if (!Number.isInteger(parsed) || parsed <= 0) {
+        commandError(`Invalid session id: ${value}`)
+      }
+      sessionId = parsed
+      continue
+    }
+
+    commandError(`Unknown chat option: ${arg}`)
+  }
+
+  return { sessionId }
+}
+
+type WelcomeOptions = {
+  sessionId?: number
+}
+
+function parseWelcomeOptions(args: string[]): WelcomeOptions {
+  const { sessionId } = parseChatOptions(args)
+  return { sessionId }
+}
+
+async function chat(options: ChatOptions = {}) {
   const token = await loadToken()
   const wsUrl = new URL(toWebSocketBaseUrl(MAID_BASE_URL))
   wsUrl.searchParams.set('token', token)
   wsUrl.searchParams.set('maidId', MAID_ID)
+  if (options.sessionId !== undefined) {
+    wsUrl.searchParams.set('sessionId', String(options.sessionId))
+  }
 
   const rl = createInterface({ input: stdin, output: stdout })
   const ws = new WebSocket(wsUrl)
 
   let pending: PendingResponse | null = null
   let closed = false
-  let currentSessionId: number | null = null
-
   const openPromise = new Promise<void>((resolve, reject) => {
     ws.onopen = () => resolve()
     ws.onerror = (err) => reject(err.message)
@@ -138,8 +187,13 @@ async function chat() {
       return
     }
 
+    if (message.type === 'chat.session_created') {
+      wsUrl.searchParams.set('sessionId', String(message.sessionId))
+      console.log(`[session] ${message.sessionId}`)
+      return
+    }
+
     if (message.type === 'chat.done') {
-      currentSessionId = message.sessionId
       wsUrl.searchParams.set('sessionId', String(message.sessionId))
 
       if (pending) {
@@ -170,6 +224,11 @@ async function chat() {
     await openPromise
     console.log('Connected. Type a message and press Enter. Type "exit" to quit.')
 
+    ws.send(JSON.stringify({ type: 'chat.welcome' }))
+    await new Promise<number>((resolve, reject) => {
+      pending = { printed: false, resolve, reject }
+    })
+
     while (!closed) {
       const input = (await rl.question('you> ')).trim()
       if (!input) continue
@@ -181,14 +240,76 @@ async function chat() {
       await new Promise<number>((resolve, reject) => {
         pending = { printed: false, resolve, reject }
       })
-
-      if (currentSessionId !== null) {
-        console.log(`[session] ${currentSessionId}`)
-      }
     }
   } finally {
     rl.close()
     if (!closed) ws.close()
+  }
+}
+
+async function welcome(options: WelcomeOptions = {}) {
+  const token = await loadToken()
+  const wsUrl = new URL(toWebSocketBaseUrl(MAID_BASE_URL))
+  wsUrl.searchParams.set('token', token)
+  wsUrl.searchParams.set('maidId', MAID_ID)
+  if (options.sessionId !== undefined) {
+    wsUrl.searchParams.set('sessionId', String(options.sessionId))
+  }
+
+  const ws = new WebSocket(wsUrl)
+  let printed = false
+
+  const donePromise = new Promise<number>((resolve, reject) => {
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ type: 'chat.welcome' }))
+    }
+
+    ws.onerror = (err) => {
+      reject(new Error(err.message))
+    }
+
+    ws.onmessage = (event) => {
+      let message: ServerMessage
+      try {
+        message = JSON.parse(String(event.data))
+      } catch {
+        reject(new Error('invalid JSON response'))
+        return
+      }
+
+      if (message.type === 'chat.delta') {
+        if (!printed) {
+          printed = true
+          stdout.write('assistant> ')
+        }
+        stdout.write(message.delta)
+        return
+      }
+
+      if (message.type === 'chat.session_created') {
+        wsUrl.searchParams.set('sessionId', String(message.sessionId))
+        console.log(`[session] ${message.sessionId}`)
+        return
+      }
+
+      if (message.type === 'chat.done') {
+        if (printed) stdout.write('\n')
+        resolve(message.sessionId)
+        return
+      }
+
+      reject(new Error(message.message))
+    }
+
+    ws.onclose = () => {
+      reject(new Error('WebSocket closed'))
+    }
+  })
+
+  try {
+    await donePromise
+  } finally {
+    ws.close()
   }
 }
 
@@ -207,7 +328,8 @@ function printUsage() {
       'Usage:',
       '  bun run cli login email',
       '  bun run cli login phone',
-      '  bun run cli chat',
+      '  bun run cli chat [--session <id>]',
+      '  bun run cli welcome [--session <id>]',
       '  bun run cli logout',
       '',
       'Environment:',
@@ -221,20 +343,27 @@ function printUsage() {
 
 async function main() {
   const [, , ...args] = process.argv
-  const [command, subcommand, variant] = args
+  const [command, ...rest] = args
 
-  if (command === 'login' && subcommand === 'email') {
+  if (command === 'login' && rest[0] === 'email') {
     await loginEmail()
     return
   }
 
-  if (command === 'login' && subcommand === 'phone') {
+  if (command === 'login' && rest[0] === 'phone') {
     await loginPhone()
     return
   }
 
   if (command === 'chat') {
-    await chat()
+    const options = parseChatOptions(rest)
+    await chat(options)
+    return
+  }
+
+  if (command === 'welcome') {
+    const options = parseWelcomeOptions(rest)
+    await welcome(options)
     return
   }
 
@@ -248,7 +377,7 @@ async function main() {
     return
   }
 
-  commandError(`Unknown command: ${[command, subcommand, variant].filter(Boolean).join(' ')}`)
+  commandError(`Unknown command: ${[command, ...rest].filter(Boolean).join(' ')}`)
 }
 
 main().catch((error) => commandError(error instanceof Error ? error.message : String(error)))

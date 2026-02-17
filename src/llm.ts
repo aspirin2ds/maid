@@ -12,32 +12,58 @@ export const ollama = new Ollama({
   host: env.OLLAMA_BASE_URL,
 })
 
+type OpenAIResponseStream = ReturnType<typeof openai.responses.stream>
+
+function attachStreamTelemetry(stream: OpenAIResponseStream, model: string): OpenAIResponseStream {
+  const start = Date.now()
+  let firstTokenMs: number | null = null
+
+  stream.on('response.output_text.delta', () => {
+    if (firstTokenMs !== null) return
+    firstTokenMs = Date.now() - start
+    logger.info({
+      fn: 'streamResponse',
+      model,
+      firstTokenMs,
+    }, 'llm.first_token')
+  })
+
+  stream.on('response.completed', (event) => {
+    const { usage } = event.response
+    logger.info({
+      fn: 'streamResponse',
+      model,
+      durationMs: Date.now() - start,
+      firstTokenMs: firstTokenMs ?? undefined,
+      inputTokens: usage?.input_tokens,
+      outputTokens: usage?.output_tokens,
+    }, 'llm.completed')
+  })
+
+  stream.on('error', (error) => {
+    logger.error({
+      fn: 'streamResponse',
+      model,
+      durationMs: Date.now() - start,
+      firstTokenMs: firstTokenMs ?? undefined,
+      error: error.message,
+    }, 'llm.failed')
+  })
+
+  return stream
+}
+
 export function streamResponse(
   input: string,
   instructions?: string,
 ) {
-  const start = Date.now()
-  return openai.responses.stream({
+  const stream = openai.responses.stream({
     model: env.OPENAI_RESPONSE_MODEL,
     input,
     instructions,
-  }).on('response.completed', (event) => {
-    const { usage } = event.response
-    logger.info({
-      fn: 'streamResponse',
-      model: env.OPENAI_RESPONSE_MODEL,
-      durationMs: Date.now() - start,
-      inputTokens: usage?.input_tokens,
-      outputTokens: usage?.output_tokens,
-    }, 'llm.completed')
-  }).on('error', (error) => {
-    logger.error({
-      fn: 'streamResponse',
-      model: env.OPENAI_RESPONSE_MODEL,
-      durationMs: Date.now() - start,
-      error: error.message,
-    }, 'llm.failed')
   })
+
+  return attachStreamTelemetry(stream, env.OPENAI_RESPONSE_MODEL)
 }
 
 export async function structuredResponse<T extends ZodType>(
