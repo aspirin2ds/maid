@@ -101,7 +101,7 @@ describe('session service unit', () => {
 
   test('listRecentMessages defaults to cross-session query (sameSession=false)', async () => {
     const rows = [
-      { id: 1, sessionId: 9, role: 'user', content: 'a', metadata: {}, extractedAt: null, createdAt: new Date(), updatedAt: new Date() },
+      { id: 1, sessionId: 9, role: 'user' as const, content: 'a', metadata: {}, extractedAt: null, createdAt: new Date(), updatedAt: new Date() },
     ]
 
     const { database, selectCallMeta } = createMockDatabase({
@@ -124,7 +124,7 @@ describe('session service unit', () => {
 
   test('listRecentMessages with sameSession=true does not join sessions', async () => {
     const rows = [
-      { id: 2, sessionId: 7, role: 'assistant', content: 'b', metadata: {}, extractedAt: null, createdAt: new Date(), updatedAt: new Date() },
+      { id: 2, sessionId: 7, role: 'assistant' as const, content: 'b', metadata: {}, extractedAt: null, createdAt: new Date(), updatedAt: new Date() },
     ]
 
     const { database, selectCallMeta } = createMockDatabase({

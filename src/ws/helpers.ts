@@ -27,12 +27,19 @@ export function humanizeZodError(err: ZodError): string {
 }
 
 export function handleAbort(ws: ServerWebSocket<StreamSocketData>) {
+  ws.data.q.clear()
   const { stream } = ws.data.state
   if (stream) {
     stream.abort()
     ws.data.state.stream = null
   }
-  ws.data.q.clear()
+  ws.data.q.onIdle().then(() => {
+    const { stream } = ws.data.state
+    if (stream) {
+      stream.abort()
+      ws.data.state.stream = null
+    }
+  })
 }
 
 export type EnsureSessionResult = {
@@ -145,11 +152,11 @@ export async function streamAndSendAssistantResponse(options: {
     send(options.ws, { type: 'chat.delta', delta: event.delta })
   })
 
-  try {
-    await stream.finalResponse()
-  } finally {
-    options.ws.data.state.stream = null
-  }
+  await new Promise<void>((resolve, reject) => {
+    stream.on('response.completed', () => resolve())
+    stream.on('error', (err) => reject(err))
+  })
+  options.ws.data.state.stream = null
 
   return streamedText.trim()
 }

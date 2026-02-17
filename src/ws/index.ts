@@ -1,8 +1,8 @@
 import type { ServerWebSocket } from 'bun'
 import { ZodError } from 'zod'
 import PQueue from 'p-queue'
-
 import type { streamResponse } from '../llm'
+import { logger } from '../logger'
 import type { MemoryService } from '../memory'
 import type { Session } from '../session'
 import type { SessionService } from '../session'
@@ -113,11 +113,11 @@ export const streamWebSocketHandlers = {
       parsed = clientMessage.parse(JSON.parse(message))
     } catch (err) {
       if (err instanceof SyntaxError) {
-        send(ws, { type: "error", message: "invalid JSON" })
+        send(ws, { type: "chat.error", message: "invalid JSON" })
       } else if (err instanceof ZodError) {
-        send(ws, { type: "error", message: humanizeZodError(err) })
+        send(ws, { type: "chat.error", message: humanizeZodError(err) })
       } else {
-        send(ws, { type: "error", message: err instanceof Error ? err.message : "unknown error" })
+        send(ws, { type: "chat.error", message: err instanceof Error ? err.message : "unknown error" })
       }
       return
     }
@@ -131,8 +131,8 @@ export const streamWebSocketHandlers = {
       try {
         await route(ws, parsed)
       } catch (err) {
-        console.error("WebSocket route error", err)
-        send(ws, { type: "error", message: "internal server error" })
+        logger.error({ route: parsed.type, error: err }, 'ws.route.error')
+        send(ws, { type: "chat.error", message: err instanceof Error ? err.message : "internal server error" })
       }
     })
   },
@@ -143,3 +143,4 @@ export const streamWebSocketHandlers = {
   error(ws: ServerWebSocket, error: Error) {
   },
 }
+
