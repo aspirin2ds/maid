@@ -29,7 +29,7 @@ function withMaid(ws: ServerWebSocket<StreamSocketData>) {
   const maid = findStreamSocketHandler(ws.data.maidId)
   if (maid) return maid
 
-  send(ws, { type: "chat.error", message: `unknown maidId: ${ws.data.maidId}` })
+  send(ws, { type: "error", message: `unknown maidId: ${ws.data.maidId}` })
   ws.close(1008, 'unknown maid')
   return null
 }
@@ -49,11 +49,11 @@ export const streamWebSocketHandlers = {
       parsed = clientMessage.parse(JSON.parse(message))
     } catch (err) {
       if (err instanceof SyntaxError) {
-        send(ws, { type: "chat.error", message: "invalid JSON" })
+        send(ws, { type: "error", message: "invalid JSON" })
       } else if (err instanceof ZodError) {
-        send(ws, { type: "chat.error", message: humanizeZodError(err) })
+        send(ws, { type: "error", message: humanizeZodError(err) })
       } else {
-        send(ws, { type: "chat.error", message: err instanceof Error ? err.message : "unknown error" })
+        send(ws, { type: "error", message: err instanceof Error ? err.message : "unknown error" })
       }
       return
     }
@@ -81,7 +81,7 @@ export const streamWebSocketHandlers = {
         await maid.onInput(ws, parsed)
       } catch (err) {
         logger.error({ route: parsed.type, error: err }, 'ws.route.error')
-        send(ws, { type: "chat.error", message: err instanceof Error ? err.message : "internal server error" })
+        send(ws, { type: "error", message: err instanceof Error ? err.message : "internal server error" })
       }
     })
   },

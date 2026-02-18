@@ -6,10 +6,11 @@ import { createInterface } from 'node:readline/promises'
 import { stdin, stdout } from 'node:process'
 
 type ServerMessage =
-  | { type: 'chat.delta'; delta: string }
-  | { type: 'chat.done'; sessionId: number }
-  | { type: 'chat.session_created'; sessionId: number }
-  | { type: 'chat.error'; message: string }
+  | { type: 'stream_start' }
+  | { type: 'stream_text_delta'; delta: string }
+  | { type: 'stream_done'; sessionId: number }
+  | { type: 'session_created'; sessionId: number }
+  | { type: 'error'; message: string }
 
 const AUTH_BASE_URL = process.env.BETTER_AUTH_URL ?? 'http://localhost:3000'
 const MAID_BASE_URL = process.env.MAID_BASE_URL ?? 'http://localhost:3010'
@@ -177,7 +178,7 @@ async function chat(options: ChatOptions = {}) {
       return
     }
 
-    if (message.type === 'chat.delta') {
+    if (message.type === 'stream_text_delta') {
       if (!pending) return
       if (!pending.printed) {
         pending.printed = true
@@ -187,13 +188,22 @@ async function chat(options: ChatOptions = {}) {
       return
     }
 
-    if (message.type === 'chat.session_created') {
+    if (message.type === 'stream_start') {
+      if (!pending) return
+      if (!pending.printed) {
+        pending.printed = true
+        stdout.write('assistant> ')
+      }
+      return
+    }
+
+    if (message.type === 'session_created') {
       wsUrl.searchParams.set('sessionId', String(message.sessionId))
       console.log(`[session] ${message.sessionId}`)
       return
     }
 
-    if (message.type === 'chat.done') {
+    if (message.type === 'stream_done') {
       wsUrl.searchParams.set('sessionId', String(message.sessionId))
 
       if (pending) {
@@ -280,7 +290,7 @@ async function welcome(options: WelcomeOptions = {}) {
         return
       }
 
-      if (message.type === 'chat.delta') {
+      if (message.type === 'stream_text_delta') {
         if (!printed) {
           printed = true
           stdout.write('assistant> ')
@@ -289,13 +299,21 @@ async function welcome(options: WelcomeOptions = {}) {
         return
       }
 
-      if (message.type === 'chat.session_created') {
+      if (message.type === 'stream_start') {
+        if (!printed) {
+          printed = true
+          stdout.write('assistant> ')
+        }
+        return
+      }
+
+      if (message.type === 'session_created') {
         wsUrl.searchParams.set('sessionId', String(message.sessionId))
         console.log(`[session] ${message.sessionId}`)
         return
       }
 
-      if (message.type === 'chat.done') {
+      if (message.type === 'stream_done') {
         if (printed) stdout.write('\n')
         resolve(message.sessionId)
         return

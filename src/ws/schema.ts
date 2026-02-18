@@ -33,10 +33,11 @@ export type ClientMessage = z.infer<typeof clientMessage>
 // -- Outgoing message schemas ------------------------------------------------
 
 export const serverMessage = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("chat.delta"), delta: z.string() }),
-  z.object({ type: z.literal("chat.done"), sessionId: z.number() }),
-  z.object({ type: z.literal("chat.session_created"), sessionId: z.number() }),
-  z.object({ type: z.literal("chat.error"), message: z.string() }),
+  z.object({ type: z.literal("stream_start") }),
+  z.object({ type: z.literal("stream_text_delta"), delta: z.string() }),
+  z.object({ type: z.literal("stream_done"), sessionId: z.number() }),
+  z.object({ type: z.literal("session_created"), sessionId: z.number() }),
+  z.object({ type: z.literal("error"), message: z.string() }),
 ])
 
 export type ServerMessage = z.infer<typeof serverMessage>

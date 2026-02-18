@@ -91,7 +91,7 @@ export const chatMaidHandler: StreamSocketHandler = {
     const { memoryService } = ws.data
     const { session, created } = await ensureSession(ws)
     if (created) {
-      send(ws, { type: "chat.session_created", sessionId: session.id })
+      send(ws, { type: "session_created", sessionId: session.id })
     }
 
     const [recentMessages, recentMemories] = await Promise.all([
@@ -100,6 +100,8 @@ export const chatMaidHandler: StreamSocketHandler = {
     ])
 
     const input = buildWelcomeInput(recentMessages, recentMemories)
+    send(ws, { type: "stream_start" })
+
     const assistantText = await streamAndSendAssistantResponse({
       ws,
       route: 'welcome',
@@ -109,7 +111,7 @@ export const chatMaidHandler: StreamSocketHandler = {
     })
 
     await session.saveMessage({ role: "assistant", content: assistantText })
-    send(ws, { type: "chat.done", sessionId: session.id })
+    send(ws, { type: "stream_done", sessionId: session.id })
 
     memoryService.enqueueMemoryExtraction().catch(() => { })
   },
@@ -119,7 +121,7 @@ export const chatMaidHandler: StreamSocketHandler = {
     const { memoryService } = ws.data
     const { session, created } = await ensureSession(ws)
     if (created) {
-      send(ws, { type: "chat.session_created", sessionId: session.id })
+      send(ws, { type: "session_created", sessionId: session.id })
     }
 
     await session.saveMessage({ role: "user", content: msg.content })
@@ -130,6 +132,7 @@ export const chatMaidHandler: StreamSocketHandler = {
     ])
 
     const input = buildChatInput(msg.content, recentMessages, relatedMemories)
+    send(ws, { type: "stream_start" })
     const assistantText = await streamAndSendAssistantResponse({
       ws,
       route: 'input',
@@ -139,7 +142,7 @@ export const chatMaidHandler: StreamSocketHandler = {
     })
 
     await session.saveMessage({ role: "assistant", content: assistantText })
-    send(ws, { type: "chat.done", sessionId: session.id })
+    send(ws, { type: "stream_done", sessionId: session.id })
 
     memoryService.enqueueMemoryExtraction().catch(() => { })
   },

@@ -69,7 +69,7 @@ export async function streamAndSendAssistantResponse(options: {
       }, 'ws.chat.first_token')
     }
     streamedText += event.delta
-    send(options.ws, { type: 'chat.delta', delta: event.delta })
+    send(options.ws, { type: 'stream_text_delta', delta: event.delta })
   })
 
   await new Promise<void>((resolve, reject) => {
