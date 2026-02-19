@@ -138,7 +138,6 @@ const server = Bun.serve({
               session: null,
               stream: null,
               aborted: false,
-              rejectStream: null,
             }
           },
         })

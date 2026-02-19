@@ -32,6 +32,10 @@ export async function streamAndSendAssistantResponse(options: {
   const stream = streamResponse(input)
   ws.data.state.stream = stream
 
+  // Prevent unhandled rejection: the OpenAI SDK emits an 'abort' event
+  // with Promise.reject() when no abort listener is registered.
+  stream.on('abort', () => {})
+
   let streamedText = ''
   let firstTokenLogged = false
   stream.on('response.output_text.delta', (event) => {
@@ -44,11 +48,9 @@ export async function streamAndSendAssistantResponse(options: {
   })
 
   await new Promise<void>((resolve, reject) => {
-    ws.data.state.rejectStream = reject
     stream.on('response.completed', () => resolve())
     stream.on('error', reject)
   }).finally(() => {
-    ws.data.state.rejectStream = null
     ws.data.state.stream = null
   })
 

@@ -8,26 +8,20 @@ import type { Session, SessionService } from '../session'
 import { findStreamSocketHandler, type StreamSocketHandler } from './maids'
 import { clientMessage, send } from './schema'
 
-/** Abort the active LLM stream and reject its pending promise. */
+/** Abort the active LLM stream. The stream emits an error event which rejects the pending promise. */
 function abortCurrentStream(ws: ServerWebSocket<StreamSocketData>): void {
-  const { stream, rejectStream } = ws.data.state
+  const { stream } = ws.data.state
   if (!stream) return
 
   stream.abort()
   ws.data.state.stream = null
-  if (rejectStream) {
-    ws.data.state.rejectStream = null
-    rejectStream(new Error('stream aborted'))
-  }
 }
 
-/** Mark connection as aborted, clear the queue, and abort the stream once idle. */
+/** Clear the queue and abort the active stream immediately. */
 function handleAbort(ws: ServerWebSocket<StreamSocketData>): void {
   ws.data.state.aborted = true
   ws.data.q.clear()
-  ws.data.q.onIdle().then(() => abortCurrentStream(ws)).catch((err) => {
-    logger.error({ error: err }, 'ws.abort.error')
-  })
+  abortCurrentStream(ws)
 }
 
 function humanizeZodError(err: ZodError): string {
@@ -57,10 +51,9 @@ export type StreamSocketData = {
 }
 
 type StreamSocketState = {
-  session: Session | null // the session of this conversation
-  stream: ReturnType<typeof streamResponse> | null // current openai stream
+  session: Session | null
+  stream: ReturnType<typeof streamResponse> | null
   aborted: boolean
-  rejectStream: ((reason: Error) => void) | null
 }
 
 /** Resolve the maid handler for this connection, closing the socket if unknown. */
@@ -125,7 +118,6 @@ export const streamWebSocketHandlers = {
 
   close(ws: ServerWebSocket<StreamSocketData>) {
     handleAbort(ws)
-    abortCurrentStream(ws)
   },
 
   error(_ws: ServerWebSocket, error: Error) {
