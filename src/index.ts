@@ -136,7 +136,9 @@ const server = Bun.serve({
             q: new PQueue({ concurrency: 1 }),
             state: {
               session: null,
-              stream: null
+              stream: null,
+              aborted: false,
+              rejectStream: null,
             }
           },
         })

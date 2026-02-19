@@ -4,6 +4,7 @@ import {
   ensureSession,
   streamAndSendAssistantResponse,
 } from '../stream'
+import { logger } from '../../logger'
 import type { RelatedMemory } from '../../memory'
 import type { Session } from '../../session'
 import type { StreamSocketData } from '../index'
@@ -102,7 +103,7 @@ async function respondWithStream(options: {
   route: string
   buildInput: (session: Session) => Promise<string>
   saveUserMessage?: Parameters<Session['saveMessage']>[0]
-}) {
+}): Promise<void> {
   const start = Date.now()
   const { session, created } = await ensureSession(options.ws)
   if (created) {
@@ -127,7 +128,9 @@ async function respondWithStream(options: {
   await session.saveMessage({ role: "assistant", content: assistantText })
   send(options.ws, { type: "stream_done", sessionId: session.id })
 
-  options.ws.data.memoryService.enqueueMemoryExtraction().catch(() => {})
+  options.ws.data.memoryService.enqueueMemoryExtraction().catch((err) => {
+    logger.error({ error: err }, 'memory.extraction.enqueue.error')
+  })
 }
 
 export const chatMaidHandler: StreamSocketHandler = {
@@ -159,5 +162,4 @@ export const chatMaidHandler: StreamSocketHandler = {
       },
     })
   },
-
 }

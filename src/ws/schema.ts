@@ -44,6 +44,11 @@ export type ServerMessage = z.infer<typeof serverMessage>
 
 // -- Helpers -----------------------------------------------------------------
 
-export function send(ws: ServerWebSocket<StreamSocketData>, msg: ServerMessage) {
-  ws.sendText(JSON.stringify(msg))
+export function send(ws: ServerWebSocket<StreamSocketData>, msg: ServerMessage): boolean {
+  try {
+    ws.sendText(JSON.stringify(msg))
+    return true
+  } catch {
+    return false
+  }
 }

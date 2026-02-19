@@ -4,26 +4,30 @@ import PQueue from 'p-queue'
 import type { streamResponse } from '../llm'
 import { logger } from '../logger'
 import type { MemoryService } from '../memory'
-import type { Session } from '../session'
-import type { SessionService } from '../session'
-import { findStreamSocketHandler } from './maids'
+import type { Session, SessionService } from '../session'
+import { findStreamSocketHandler, type StreamSocketHandler } from './maids'
 import { clientMessage, send } from './schema'
 
-/** Abort the active LLM stream only after all queued tasks have drained. */
-function abortStreamIfQueueIdle(ws: ServerWebSocket<StreamSocketData>) {
-  if (ws.data.q.size > 0 || ws.data.q.pending > 0) return
-
-  const { stream } = ws.data.state
+/** Abort the active LLM stream and reject its pending promise. */
+function abortCurrentStream(ws: ServerWebSocket<StreamSocketData>): void {
+  const { stream, rejectStream } = ws.data.state
   if (!stream) return
 
   stream.abort()
   ws.data.state.stream = null
+  if (rejectStream) {
+    ws.data.state.rejectStream = null
+    rejectStream(new Error('stream aborted'))
+  }
 }
 
-/** Clear pending queue items and abort the stream once idle. */
-function handleAbort(ws: ServerWebSocket<StreamSocketData>) {
+/** Mark connection as aborted, clear the queue, and abort the stream once idle. */
+function handleAbort(ws: ServerWebSocket<StreamSocketData>): void {
+  ws.data.state.aborted = true
   ws.data.q.clear()
-  ws.data.q.onIdle().then(() => abortStreamIfQueueIdle(ws))
+  ws.data.q.onIdle().then(() => abortCurrentStream(ws)).catch((err) => {
+    logger.error({ error: err }, 'ws.abort.error')
+  })
 }
 
 function humanizeZodError(err: ZodError): string {
@@ -33,6 +37,13 @@ function humanizeZodError(err: ZodError): string {
       return `${path}: ${i.message}`
     })
     .join('\n')
+}
+
+function formatParseError(err: unknown): string {
+  if (err instanceof SyntaxError) return "invalid JSON"
+  if (err instanceof ZodError) return humanizeZodError(err)
+  if (err instanceof Error) return err.message
+  return "unknown error"
 }
 
 export type StreamSocketData = {
@@ -48,10 +59,12 @@ export type StreamSocketData = {
 type StreamSocketState = {
   session: Session | null // the session of this conversation
   stream: ReturnType<typeof streamResponse> | null // current openai stream
+  aborted: boolean
+  rejectStream: ((reason: Error) => void) | null
 }
 
 /** Resolve the maid handler for this connection, closing the socket if unknown. */
-function withMaid(ws: ServerWebSocket<StreamSocketData>) {
+function withMaid(ws: ServerWebSocket<StreamSocketData>): StreamSocketHandler | null {
   const maid = findStreamSocketHandler(ws.data.maidId)
   if (maid) return maid
 
@@ -75,13 +88,7 @@ export const streamWebSocketHandlers = {
     try {
       parsed = clientMessage.parse(JSON.parse(message))
     } catch (err) {
-      if (err instanceof SyntaxError) {
-        send(ws, { type: "error", message: "invalid JSON" })
-      } else if (err instanceof ZodError) {
-        send(ws, { type: "error", message: humanizeZodError(err) })
-      } else {
-        send(ws, { type: "error", message: err instanceof Error ? err.message : "unknown error" })
-      }
+      send(ws, { type: "error", message: formatParseError(err) })
       return
     }
 
@@ -102,30 +109,26 @@ export const streamWebSocketHandlers = {
 
     // welcome and input are queued so they run sequentially per connection
     ws.data.q.add(async () => {
-      try {
-        if (parsed.type === 'welcome') {
-          await maid.onWelcome(ws, parsed)
-          return
-        }
-
-        await maid.onInput(ws, parsed)
-      } catch (err) {
-        logger.error({ route: parsed.type, error: err }, 'ws.route.error')
-        send(ws, { type: "error", message: err instanceof Error ? err.message : "internal server error" })
+      switch (parsed.type) {
+        case 'welcome': return maid.onWelcome(ws, parsed)
+        case 'input': return maid.onInput(ws, parsed)
+      }
+    }).catch((err) => {
+      if (ws.data.state.aborted) return
+      logger.error({ route: parsed.type, error: err }, 'ws.queue.error')
+      send(ws, { type: "error", message: err instanceof Error ? err.message : "internal server error" })
+      if (ws.data.sessionId !== undefined && !ws.data.state.session) {
+        ws.close(1008, 'session not found')
       }
     })
   },
 
   close(ws: ServerWebSocket<StreamSocketData>) {
-    ws.data.q.clear()
-    const stream = ws.data.state.stream
-    if (stream) {
-      stream.abort()
-      ws.data.state.stream = null
-    }
+    handleAbort(ws)
+    abortCurrentStream(ws)
   },
 
-  error(ws: ServerWebSocket, error: Error) {
+  error(_ws: ServerWebSocket, error: Error) {
     logger.error({ error }, 'ws.error')
   },
 }

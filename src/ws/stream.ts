@@ -6,13 +6,11 @@ import type { Session } from '../session'
 import type { StreamSocketData } from './index'
 import { send } from './schema'
 
-export type EnsureSessionResult = {
+/** Lazily create or retrieve the session attached to this WebSocket connection. */
+export async function ensureSession(ws: ServerWebSocket<StreamSocketData>): Promise<{
   session: Session
   created: boolean
-}
-
-/** Lazily create or retrieve the session attached to this WebSocket connection. */
-export async function ensureSession(ws: ServerWebSocket<StreamSocketData>): Promise<EnsureSessionResult> {
+}> {
   if (ws.data.state.session) {
     return { session: ws.data.state.session, created: false }
   }
@@ -25,35 +23,34 @@ export async function ensureSession(ws: ServerWebSocket<StreamSocketData>): Prom
 /** Stream an LLM response, forwarding text deltas to the client as they arrive. */
 export async function streamAndSendAssistantResponse(options: {
   ws: ServerWebSocket<StreamSocketData>
-  route: string,
+  route: string
   sessionId: number
   input: string
   start: number
 }): Promise<string> {
-  const stream = streamResponse(options.input)
-  options.ws.data.state.stream = stream
+  const { ws, route, sessionId, input, start } = options
+  const stream = streamResponse(input)
+  ws.data.state.stream = stream
 
   let streamedText = ''
   let firstTokenLogged = false
   stream.on('response.output_text.delta', (event) => {
     if (!firstTokenLogged) {
       firstTokenLogged = true
-      logger.info({
-        route: options.route,
-        maidId: options.ws.data.maidId,
-        sessionId: options.sessionId,
-        firstTokenMs: Date.now() - options.start,
-      }, 'ws.chat.first_token')
+      logger.info({ route, maidId: ws.data.maidId, sessionId, firstTokenMs: Date.now() - start }, 'ws.chat.first_token')
     }
     streamedText += event.delta
-    send(options.ws, { type: 'stream_text_delta', delta: event.delta })
+    send(ws, { type: 'stream_text_delta', delta: event.delta })
   })
 
   await new Promise<void>((resolve, reject) => {
+    ws.data.state.rejectStream = reject
     stream.on('response.completed', () => resolve())
-    stream.on('error', (err) => reject(err))
+    stream.on('error', reject)
+  }).finally(() => {
+    ws.data.state.rejectStream = null
+    ws.data.state.stream = null
   })
-  options.ws.data.state.stream = null
 
   return streamedText.trim()
 }
