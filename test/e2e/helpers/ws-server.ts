@@ -1,7 +1,6 @@
 import { mock } from 'bun:test'
-import PQueue from 'p-queue'
 
-import { streamWebSocketHandlers, type StreamSocketData } from '../../../src/ws/index'
+import { createStreamSocketData, streamWebSocketHandlers } from '../../../src/ws/index'
 import { createSessionService } from '../../../src/session'
 import { createMemoryService } from '../../../src/memory'
 import type { ServerMessage } from '../../../src/ws/schema'
@@ -50,28 +49,23 @@ export function createTestServer(env: E2eTestEnv): TestServer {
       })
 
       const upgraded = appServer.upgrade(request, {
-        data: {
+        data: createStreamSocketData({
           maidId,
           sessionId,
           sessionService,
           memoryService,
-          q: new PQueue({ concurrency: 1 }),
-          state: {
-            session: null,
-            stream: null,
-            aborted: false,
-          },
-        } satisfies StreamSocketData,
+        }),
       })
 
       if (upgraded) return
       return Response.json({ message: 'WebSocket upgrade failed' }, { status: 400 })
     },
   })
+  const port = server.port ?? 0
 
   return {
-    url: `ws://localhost:${server.port}/ws`,
-    port: server.port,
+    url: `ws://localhost:${port}/ws`,
+    port,
     close: () => server.stop(true),
   }
 }

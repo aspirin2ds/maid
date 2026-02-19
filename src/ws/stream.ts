@@ -6,6 +6,13 @@ import type { Session } from '../session'
 import type { StreamSocketData } from './index'
 import { send } from './schema'
 
+export class StreamAbortedError extends Error {
+  constructor() {
+    super('stream aborted')
+    this.name = 'StreamAbortedError'
+  }
+}
+
 /** Lazily create or retrieve the session attached to this WebSocket connection. */
 export async function ensureSession(ws: ServerWebSocket<StreamSocketData>): Promise<{
   session: Session
@@ -34,7 +41,10 @@ export async function streamAndSendAssistantResponse(options: {
 
   // Prevent unhandled rejection: the OpenAI SDK emits an 'abort' event
   // with Promise.reject() when no abort listener is registered.
-  stream.on('abort', () => {})
+  let aborted = false
+  stream.on('abort', () => {
+    aborted = true
+  })
 
   let streamedText = ''
   let firstTokenLogged = false
@@ -50,6 +60,11 @@ export async function streamAndSendAssistantResponse(options: {
   await new Promise<void>((resolve, reject) => {
     stream.on('response.completed', () => resolve())
     stream.on('error', reject)
+  }).catch((err) => {
+    if (aborted) {
+      throw new StreamAbortedError()
+    }
+    throw err
   }).finally(() => {
     ws.data.state.stream = null
   })

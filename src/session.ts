@@ -30,6 +30,13 @@ export type SessionService = {
   ensure: (sessionId?: number) => Promise<Session>
 }
 
+export class SessionNotFoundError extends Error {
+  constructor(sessionId: number, userId: string) {
+    super(`Session ${sessionId} not found for user ${userId}`)
+    this.name = 'SessionNotFoundError'
+  }
+}
+
 export function createSessionService({ database, redisClient: _redisClient, userId }: CreateSessionServiceOptions): SessionService {
   const getOwnedSession = async (sessionId: number) => {
     const [session] = await database
@@ -45,7 +52,7 @@ export function createSessionService({ database, redisClient: _redisClient, user
     if (sessionId !== undefined) {
       const owned = await getOwnedSession(sessionId)
       if (!owned) {
-        throw new Error(`Session ${sessionId} not found for user ${userId}`)
+        throw new SessionNotFoundError(sessionId, userId)
       }
 
       return sessionId

@@ -5,23 +5,31 @@ import type { streamResponse } from '../llm'
 import { logger } from '../logger'
 import type { MemoryService } from '../memory'
 import type { Session, SessionService } from '../session'
+import { SessionNotFoundError } from '../session'
 import { findStreamSocketHandler, type StreamSocketHandler } from './maids'
 import { clientMessage, send } from './schema'
+import { StreamAbortedError } from './stream'
 
 /** Abort the active LLM stream. The stream emits an error event which rejects the pending promise. */
-function abortCurrentStream(ws: ServerWebSocket<StreamSocketData>): void {
+function abortCurrentStream(ws: ServerWebSocket<StreamSocketData>): boolean {
   const { stream } = ws.data.state
-  if (!stream) return
+  if (!stream) return false
 
   stream.abort()
   ws.data.state.stream = null
+  return true
 }
 
-/** Clear the queue and abort the active stream immediately. */
-function handleAbort(ws: ServerWebSocket<StreamSocketData>): void {
-  ws.data.state.aborted = true
+/** Clear pending tasks and abort only the active stream for this connection. */
+function cancelInFlightWork(ws: ServerWebSocket<StreamSocketData>): void {
   ws.data.q.clear()
   abortCurrentStream(ws)
+}
+
+/** Connection is closing; stop all current and queued work. */
+function closeConnectionWork(ws: ServerWebSocket<StreamSocketData>): void {
+  ws.data.state.closing = true
+  cancelInFlightWork(ws)
 }
 
 function humanizeZodError(err: ZodError): string {
@@ -53,7 +61,29 @@ export type StreamSocketData = {
 type StreamSocketState = {
   session: Session | null
   stream: ReturnType<typeof streamResponse> | null
-  aborted: boolean
+  closing: boolean
+}
+
+type CreateStreamSocketDataOptions = {
+  maidId: string
+  sessionId?: number
+  sessionService: SessionService
+  memoryService: MemoryService
+}
+
+export function createStreamSocketData(options: CreateStreamSocketDataOptions): StreamSocketData {
+  return {
+    maidId: options.maidId,
+    sessionId: options.sessionId,
+    sessionService: options.sessionService,
+    memoryService: options.memoryService,
+    q: new PQueue({ concurrency: 1 }),
+    state: {
+      session: null,
+      stream: null,
+      closing: false,
+    },
+  }
 }
 
 /** Resolve the maid handler for this connection, closing the socket if unknown. */
@@ -90,12 +120,12 @@ export const streamWebSocketHandlers = {
 
     // abort and bye are connection-level operations, handled here
     if (parsed.type === 'abort') {
-      handleAbort(ws)
+      cancelInFlightWork(ws)
       return
     }
 
     if (parsed.type === 'bye') {
-      handleAbort(ws)
+      closeConnectionWork(ws)
       ws.close(1000, 'bye')
       return
     }
@@ -107,17 +137,17 @@ export const streamWebSocketHandlers = {
         case 'input': return maid.onInput(ws, parsed)
       }
     }).catch((err) => {
-      if (ws.data.state.aborted) return
+      if (err instanceof StreamAbortedError || ws.data.state.closing) return
       logger.error({ route: parsed.type, error: err }, 'ws.queue.error')
       send(ws, { type: "error", message: err instanceof Error ? err.message : "internal server error" })
-      if (ws.data.sessionId !== undefined && !ws.data.state.session) {
+      if (err instanceof SessionNotFoundError) {
         ws.close(1008, 'session not found')
       }
     })
   },
 
   close(ws: ServerWebSocket<StreamSocketData>) {
-    handleAbort(ws)
+    closeConnectionWork(ws)
   },
 
   error(_ws: ServerWebSocket, error: Error) {

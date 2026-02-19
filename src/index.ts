@@ -6,11 +6,10 @@ import { env } from './env'
 import { createMemoryService } from './memory'
 import { createMemoryExtractionQueue } from './memory/queue'
 import { createSessionService } from './session'
-import { streamWebSocketHandlers } from './ws'
+import { createStreamSocketData, streamWebSocketHandlers } from './ws'
 
 import * as schema from './db/schema'
 import z from 'zod'
-import PQueue from 'p-queue'
 const databaseClient = new Pool({ connectionString: env.DATABASE_URL })
 const database = drizzle(databaseClient, { schema })
 
@@ -127,19 +126,12 @@ const server = Bun.serve({
 
       try {
         const upgraded = appServer.upgrade(request, {
-          data: {
-            maidId: maidId,
-            sessionId: sessionId,
+          data: createStreamSocketData({
+            maidId,
+            sessionId,
             sessionService,
             memoryService,
-
-            q: new PQueue({ concurrency: 1 }),
-            state: {
-              session: null,
-              stream: null,
-              aborted: false,
-            }
-          },
+          }),
         })
 
         if (upgraded) return

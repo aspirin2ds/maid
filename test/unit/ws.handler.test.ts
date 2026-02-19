@@ -2,12 +2,13 @@ import { afterEach, describe, expect, mock, test } from 'bun:test'
 import PQueue from 'p-queue'
 
 import { streamWebSocketHandlers, type StreamSocketData } from '../../src/ws/index'
+import { SessionNotFoundError } from '../../src/session'
 
 // -- Helpers ------------------------------------------------------------------
 
 /** Messages sent via ws.sendText */
 function sentMessages(ws: MockWs): unknown[] {
-  return ws.sendText.mock.calls.map(([raw]: [string]) => JSON.parse(raw))
+  return (ws.sendText.mock.calls as Array<unknown[]>).map((args) => JSON.parse(String(args[0])))
 }
 
 function lastSentMessage(ws: MockWs): unknown {
@@ -41,7 +42,7 @@ function createMockWs(overrides: Partial<StreamSocketData> = {}) {
       state: {
         session: null,
         stream: null,
-        aborted: false,
+        closing: false,
       },
       ...overrides,
     } as unknown as StreamSocketData,
@@ -109,11 +110,11 @@ describe('ws handler', () => {
   })
 
   describe('abort', () => {
-    test('sets aborted flag and clears queue', () => {
+    test('keeps connection open', () => {
       const ws = createMockWs()
       message(ws as any, JSON.stringify({ type: 'abort' }))
 
-      expect(ws.data.state.aborted).toBe(true)
+      expect(ws.data.state.closing).toBe(false)
     })
 
     test('aborts active stream', () => {
@@ -133,7 +134,7 @@ describe('ws handler', () => {
 
       // should not throw
       message(ws as any, JSON.stringify({ type: 'abort' }))
-      expect(ws.data.state.aborted).toBe(true)
+      expect(ws.data.state.closing).toBe(false)
     })
   })
 
@@ -142,20 +143,20 @@ describe('ws handler', () => {
       const ws = createMockWs()
       message(ws as any, JSON.stringify({ type: 'bye' }))
 
-      expect(ws.data.state.aborted).toBe(true)
+      expect(ws.data.state.closing).toBe(true)
       expect(ws.close).toHaveBeenCalledWith(1000, 'bye')
     })
   })
 
   describe('close', () => {
-    test('sets aborted flag and aborts stream', () => {
+    test('sets closing flag and aborts stream', () => {
       const ws = createMockWs()
       const stream = createMockStream()
       ws.data.state.stream = stream as any
 
       close(ws as any)
 
-      expect(ws.data.state.aborted).toBe(true)
+      expect(ws.data.state.closing).toBe(true)
       expect(stream.abort).toHaveBeenCalled()
       expect(ws.data.state.stream).toBeNull()
     })
@@ -176,29 +177,41 @@ describe('ws handler', () => {
       expect(sentMessages(ws)).toContainEqual({ type: 'error', message: 'db down' })
     })
 
-    test('suppresses error when aborted', async () => {
+    test('suppresses error when closing', async () => {
       const ws = createMockWs()
       ws.data.sessionService.ensure = mock(async () => { throw new Error('db down') }) as any
-      ws.data.state.aborted = true
+      ws.data.state.closing = true
 
       message(ws as any, JSON.stringify({ type: 'input', content: 'hello' }))
       await ws.data.q.onIdle()
       await new Promise((r) => setTimeout(r, 0))
 
-      // no error message sent — aborted flag suppresses it
+      // no error message sent — closing flag suppresses it
       const errors = sentMessages(ws).filter((m: any) => m.type === 'error')
       expect(errors).toHaveLength(0)
     })
 
     test('closes socket when sessionId given but session not found', async () => {
       const ws = createMockWs({ sessionId: 42 } as any)
-      ws.data.sessionService.ensure = mock(async () => { throw new Error('not found') }) as any
+      ws.data.sessionService.ensure = mock(async () => { throw new SessionNotFoundError(42, 'u1') }) as any
 
       message(ws as any, JSON.stringify({ type: 'input', content: 'hello' }))
       await ws.data.q.onIdle()
       await new Promise((r) => setTimeout(r, 0))
 
       expect(ws.close).toHaveBeenCalledWith(1008, 'session not found')
+    })
+
+    test('does not close socket for non-session errors when sessionId was provided', async () => {
+      const ws = createMockWs({ sessionId: 42 } as any)
+      ws.data.sessionService.ensure = mock(async () => { throw new Error('db down') }) as any
+
+      message(ws as any, JSON.stringify({ type: 'input', content: 'hello' }))
+      await ws.data.q.onIdle()
+      await new Promise((r) => setTimeout(r, 0))
+
+      expect(sentMessages(ws)).toContainEqual({ type: 'error', message: 'db down' })
+      expect(ws.close).not.toHaveBeenCalled()
     })
 
     test('does not close socket when no sessionId given and session creation fails', async () => {
