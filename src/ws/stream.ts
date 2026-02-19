@@ -1,5 +1,4 @@
 import type { ServerWebSocket } from 'bun'
-import type { ZodError } from 'zod'
 
 import { streamResponse } from '../llm'
 import { logger } from '../logger'
@@ -7,15 +6,7 @@ import type { Session } from '../session'
 import type { StreamSocketData } from './index'
 import { send } from './schema'
 
-export function humanizeZodError(err: ZodError): string {
-  return err.issues
-    .map(i => {
-      const path = i.path.length ? i.path.join('.') : 'root'
-      return `${path}: ${i.message}`
-    })
-    .join('\n')
-}
-
+/** Abort the active LLM stream only after all queued tasks have drained. */
 function abortStreamIfQueueIdle(ws: ServerWebSocket<StreamSocketData>) {
   if (ws.data.q.size > 0 || ws.data.q.pending > 0) return
 
@@ -26,6 +17,7 @@ function abortStreamIfQueueIdle(ws: ServerWebSocket<StreamSocketData>) {
   ws.data.state.stream = null
 }
 
+/** Clear pending queue items and abort the stream once idle. */
 export function handleAbort(ws: ServerWebSocket<StreamSocketData>) {
   ws.data.q.clear()
   ws.data.q.onIdle().then(() => abortStreamIfQueueIdle(ws))
@@ -36,6 +28,7 @@ export type EnsureSessionResult = {
   created: boolean
 }
 
+/** Lazily create or retrieve the session attached to this WebSocket connection. */
 export async function ensureSession(ws: ServerWebSocket<StreamSocketData>): Promise<EnsureSessionResult> {
   if (ws.data.state.session) {
     return { session: ws.data.state.session, created: false }
@@ -46,6 +39,7 @@ export async function ensureSession(ws: ServerWebSocket<StreamSocketData>): Prom
   return { session: ws.data.state.session, created }
 }
 
+/** Stream an LLM response, forwarding text deltas to the client as they arrive. */
 export async function streamAndSendAssistantResponse(options: {
   ws: ServerWebSocket<StreamSocketData>
   route: string,

@@ -6,9 +6,17 @@ import { logger } from '../logger'
 import type { MemoryService } from '../memory'
 import type { Session } from '../session'
 import type { SessionService } from '../session'
-import { humanizeZodError } from './helpers'
 import { findStreamSocketHandler } from './maids'
 import { clientMessage, send } from './schema'
+
+function humanizeZodError(err: ZodError): string {
+  return err.issues
+    .map(i => {
+      const path = i.path.length ? i.path.join('.') : 'root'
+      return `${path}: ${i.message}`
+    })
+    .join('\n')
+}
 
 export type StreamSocketData = {
   maidId: string
@@ -21,10 +29,11 @@ export type StreamSocketData = {
 }
 
 type StreamSocketState = {
-  session: Session | null // the session of this coversation
+  session: Session | null // the session of this conversation
   stream: ReturnType<typeof streamResponse> | null // current openai stream
 }
 
+/** Resolve the maid handler for this connection, closing the socket if unknown. */
 function withMaid(ws: ServerWebSocket<StreamSocketData>) {
   const maid = findStreamSocketHandler(ws.data.maidId)
   if (maid) return maid
@@ -35,6 +44,7 @@ function withMaid(ws: ServerWebSocket<StreamSocketData>) {
 }
 
 export const streamWebSocketHandlers = {
+  // Placeholder: actual data is set at WebSocket upgrade time
   data: {} as StreamSocketData,
 
   open(ws: ServerWebSocket<StreamSocketData>) {
@@ -61,6 +71,7 @@ export const streamWebSocketHandlers = {
     const maid = withMaid(ws)
     if (!maid) return
 
+    // abort and bye run immediately, outside the queue
     if (parsed.type === 'abort') {
       maid.onAbort(ws, parsed)
       return
@@ -71,6 +82,7 @@ export const streamWebSocketHandlers = {
       return
     }
 
+    // welcome and input are queued so they run sequentially per connection
     ws.data.q.add(async () => {
       try {
         if (parsed.type === 'welcome') {
@@ -96,5 +108,6 @@ export const streamWebSocketHandlers = {
   },
 
   error(ws: ServerWebSocket, error: Error) {
+    logger.error({ error }, 'ws.error')
   },
 }

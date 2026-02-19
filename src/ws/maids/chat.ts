@@ -1,11 +1,15 @@
+import type { ServerWebSocket } from 'bun'
+
 import {
   ensureSession,
   handleAbort,
   streamAndSendAssistantResponse,
-} from '../helpers'
+} from '../stream'
 import type { RelatedMemory } from '../../memory'
+import type { Session } from '../../session'
+import type { StreamSocketData } from '../index'
 import { send } from '../schema'
-import type { StreamSocketHandler } from './types'
+import type { StreamSocketHandler } from './index'
 
 type HistoryMessage = {
   role: string
@@ -15,6 +19,8 @@ type HistoryMessage = {
 type MemoryItem = {
   content: string
 }
+
+// -- Prompt builders ----------------------------------------------------------
 
 function buildWelcomeInput(recentMessages: HistoryMessage[], recentMemories: MemoryItem[]): string {
   const parts: string[] = [
@@ -85,66 +91,74 @@ function buildChatInput(
   return parts.join('\n')
 }
 
+// -- Shared stream lifecycle --------------------------------------------------
+
+/**
+ * Common flow for welcome and input handlers:
+ * ensure session → save user message (if any) → build prompt → stream LLM
+ * response → save assistant message → notify client done.
+ */
+async function respondWithStream(options: {
+  ws: ServerWebSocket<StreamSocketData>
+  route: string
+  buildInput: (session: Session) => Promise<string>
+  saveUserMessage?: Parameters<Session['saveMessage']>[0]
+}) {
+  const start = Date.now()
+  const { session, created } = await ensureSession(options.ws)
+  if (created) {
+    send(options.ws, { type: "session_created", sessionId: session.id })
+  }
+
+  if (options.saveUserMessage) {
+    await session.saveMessage(options.saveUserMessage)
+  }
+
+  const input = await options.buildInput(session)
+  send(options.ws, { type: "stream_start" })
+
+  const assistantText = await streamAndSendAssistantResponse({
+    ws: options.ws,
+    route: options.route,
+    sessionId: session.id,
+    input,
+    start,
+  })
+
+  await session.saveMessage({ role: "assistant", content: assistantText })
+  send(options.ws, { type: "stream_done", sessionId: session.id })
+
+  options.ws.data.memoryService.enqueueMemoryExtraction().catch(() => {})
+}
+
 export const chatMaidHandler: StreamSocketHandler = {
   onWelcome: async (ws) => {
-    const start = Date.now()
-    const { memoryService } = ws.data
-    const { session, created } = await ensureSession(ws)
-    if (created) {
-      send(ws, { type: "session_created", sessionId: session.id })
-    }
-
-    const [recentMessages, recentMemories] = await Promise.all([
-      session.listRecentMessages(20, false),
-      memoryService.listRecentUpdatedMemories(20),
-    ])
-
-    const input = buildWelcomeInput(recentMessages, recentMemories)
-    send(ws, { type: "stream_start" })
-
-    const assistantText = await streamAndSendAssistantResponse({
+    await respondWithStream({
       ws,
       route: 'welcome',
-      sessionId: session.id,
-      input,
-      start,
+      buildInput: async (session) => {
+        const [recentMessages, recentMemories] = await Promise.all([
+          session.listRecentMessages(20, false),
+          ws.data.memoryService.listRecentUpdatedMemories(20),
+        ])
+        return buildWelcomeInput(recentMessages, recentMemories)
+      },
     })
-
-    await session.saveMessage({ role: "assistant", content: assistantText })
-    send(ws, { type: "stream_done", sessionId: session.id })
-
-    memoryService.enqueueMemoryExtraction().catch(() => { })
   },
 
   onInput: async (ws, msg) => {
-    const start = Date.now()
-    const { memoryService } = ws.data
-    const { session, created } = await ensureSession(ws)
-    if (created) {
-      send(ws, { type: "session_created", sessionId: session.id })
-    }
-
-    await session.saveMessage({ role: "user", content: msg.content })
-
-    const [recentMessages, relatedMemories] = await Promise.all([
-      session.listRecentMessages(20, true),
-      memoryService.getRelatedMemories(msg.content, { threshold: 0 }),
-    ])
-
-    const input = buildChatInput(msg.content, recentMessages, relatedMemories)
-    send(ws, { type: "stream_start" })
-    const assistantText = await streamAndSendAssistantResponse({
+    await respondWithStream({
       ws,
       route: 'input',
-      sessionId: session.id,
-      input,
-      start,
+      saveUserMessage: { role: "user", content: msg.content },
+      buildInput: async (session) => {
+        const [recentMessages, relatedMemories] = await Promise.all([
+          session.listRecentMessages(20, true),
+          ws.data.memoryService.getRelatedMemories(msg.content, { threshold: 0 }),
+        ])
+        return buildChatInput(msg.content, recentMessages, relatedMemories)
+      },
     })
-
-    await session.saveMessage({ role: "assistant", content: assistantText })
-    send(ws, { type: "stream_done", sessionId: session.id })
-
-    memoryService.enqueueMemoryExtraction().catch(() => { })
   },
 
   onAbort: (ws) => {
