@@ -6,23 +6,6 @@ import type { Session } from '../session'
 import type { StreamSocketData } from './index'
 import { send } from './schema'
 
-/** Abort the active LLM stream only after all queued tasks have drained. */
-function abortStreamIfQueueIdle(ws: ServerWebSocket<StreamSocketData>) {
-  if (ws.data.q.size > 0 || ws.data.q.pending > 0) return
-
-  const { stream } = ws.data.state
-  if (!stream) return
-
-  stream.abort()
-  ws.data.state.stream = null
-}
-
-/** Clear pending queue items and abort the stream once idle. */
-export function handleAbort(ws: ServerWebSocket<StreamSocketData>) {
-  ws.data.q.clear()
-  ws.data.q.onIdle().then(() => abortStreamIfQueueIdle(ws))
-}
-
 export type EnsureSessionResult = {
   session: Session
   created: boolean

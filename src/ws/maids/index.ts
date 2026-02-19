@@ -11,12 +11,10 @@ type MaidEventHandler<T extends ClientEventType> = (
   payload: Extract<ClientMessage, { type: T }>
 ) => void | Promise<void>
 
-/** Each maid implements this interface to handle the four client event types. */
+/** Each maid implements this interface to handle client messages. */
 export interface StreamSocketHandler {
   onWelcome: MaidEventHandler<'welcome'>
   onInput: MaidEventHandler<'input'>
-  onAbort: MaidEventHandler<'abort'>
-  onBye: MaidEventHandler<'bye'>
 }
 
 // -- Maid registry ------------------------------------------------------------

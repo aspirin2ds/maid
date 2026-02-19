@@ -9,6 +9,23 @@ import type { SessionService } from '../session'
 import { findStreamSocketHandler } from './maids'
 import { clientMessage, send } from './schema'
 
+/** Abort the active LLM stream only after all queued tasks have drained. */
+function abortStreamIfQueueIdle(ws: ServerWebSocket<StreamSocketData>) {
+  if (ws.data.q.size > 0 || ws.data.q.pending > 0) return
+
+  const { stream } = ws.data.state
+  if (!stream) return
+
+  stream.abort()
+  ws.data.state.stream = null
+}
+
+/** Clear pending queue items and abort the stream once idle. */
+function handleAbort(ws: ServerWebSocket<StreamSocketData>) {
+  ws.data.q.clear()
+  ws.data.q.onIdle().then(() => abortStreamIfQueueIdle(ws))
+}
+
 function humanizeZodError(err: ZodError): string {
   return err.issues
     .map(i => {
@@ -71,14 +88,15 @@ export const streamWebSocketHandlers = {
     const maid = withMaid(ws)
     if (!maid) return
 
-    // abort and bye run immediately, outside the queue
+    // abort and bye are connection-level operations, handled here
     if (parsed.type === 'abort') {
-      maid.onAbort(ws, parsed)
+      handleAbort(ws)
       return
     }
 
     if (parsed.type === 'bye') {
-      maid.onBye(ws, parsed)
+      handleAbort(ws)
+      ws.close(1000, 'bye')
       return
     }
 

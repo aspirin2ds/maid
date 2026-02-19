@@ -2,7 +2,6 @@ import type { ServerWebSocket } from 'bun'
 
 import {
   ensureSession,
-  handleAbort,
   streamAndSendAssistantResponse,
 } from '../stream'
 import type { RelatedMemory } from '../../memory'
@@ -161,12 +160,4 @@ export const chatMaidHandler: StreamSocketHandler = {
     })
   },
 
-  onAbort: (ws) => {
-    handleAbort(ws)
-  },
-
-  onBye: (ws) => {
-    handleAbort(ws)
-    ws.close(1000, 'bye')
-  },
 }
