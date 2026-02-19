@@ -6,19 +6,17 @@ import { createMemoryService } from '../../../src/memory'
 import type { ServerMessage } from '../../../src/ws/schema'
 import type { E2eTestEnv } from './testcontainers'
 
-// -- Test server factory ------------------------------------------------------
+const USER_ID = 'e2e-test-user'
 
-const TEST_USER_ID = 'e2e-test-user'
-
-export type TestServer = {
+export type WsServer = {
   url: string
   port: number
   close: () => void
 }
 
-export function createTestServer(env: E2eTestEnv): TestServer {
+export function startServer(env: E2eTestEnv): WsServer {
   const server = Bun.serve({
-    port: 0, // random available port
+    port: 0,
     websocket: streamWebSocketHandlers,
     fetch(request, appServer) {
       const url = new URL(request.url)
@@ -32,9 +30,10 @@ export function createTestServer(env: E2eTestEnv): TestServer {
         return Response.json({ message: 'maidId required' }, { status: 400 })
       }
 
-      const userId = url.searchParams.get('userId') ?? TEST_USER_ID
-      const sessionIdParam = url.searchParams.get('sessionId')
-      const sessionId = sessionIdParam ? Number(sessionIdParam) : undefined
+      const userId = url.searchParams.get('userId') ?? USER_ID
+      const sessionId = url.searchParams.get('sessionId')
+        ? Number(url.searchParams.get('sessionId'))
+        : undefined
 
       const sessionService = createSessionService({
         database: env.db,
@@ -70,30 +69,30 @@ export function createTestServer(env: E2eTestEnv): TestServer {
   }
 }
 
-// -- WsClient helper ----------------------------------------------------------
+// -- WsClient -----------------------------------------------------------------
 
 export class WsClient {
   messages: ServerMessage[] = []
   private ws: WebSocket | null = null
-  private closeEvent: { code: number; reason: string } | null = null
-  private messageWaiters: Array<{
+  private closed: { code: number; reason: string } | null = null
+  private pending: Array<{
     type: string
     resolve: (msg: ServerMessage) => void
     reject: (err: Error) => void
   }> = []
-  private closeWaiters: Array<{
+  private closePending: Array<{
     resolve: (ev: { code: number; reason: string }) => void
     reject: (err: Error) => void
   }> = []
 
-  async connect(baseUrl: string, params: Record<string, string>): Promise<void> {
-    const url = new URL(baseUrl)
+  async connect(url: string, params: Record<string, string>): Promise<void> {
+    const target = new URL(url)
     for (const [k, v] of Object.entries(params)) {
-      url.searchParams.set(k, v)
+      target.searchParams.set(k, v)
     }
 
     return new Promise<void>((resolve, reject) => {
-      const ws = new WebSocket(url.toString())
+      const ws = new WebSocket(target.toString())
 
       ws.addEventListener('open', () => {
         this.ws = ws
@@ -108,21 +107,18 @@ export class WsClient {
         const msg = JSON.parse(ev.data as string) as ServerMessage
         this.messages.push(msg)
 
-        // Resolve any pending waiters
-        for (let i = this.messageWaiters.length - 1; i >= 0; i--) {
-          if (this.messageWaiters[i].type === msg.type) {
-            const waiter = this.messageWaiters.splice(i, 1)[0]
-            waiter.resolve(msg)
+        for (let i = this.pending.length - 1; i >= 0; i--) {
+          if (this.pending[i].type === msg.type) {
+            const w = this.pending.splice(i, 1)[0]
+            w.resolve(msg)
           }
         }
       })
 
       ws.addEventListener('close', (ev) => {
-        this.closeEvent = { code: ev.code, reason: ev.reason }
-        for (const w of this.closeWaiters) {
-          w.resolve(this.closeEvent)
-        }
-        this.closeWaiters = []
+        this.closed = { code: ev.code, reason: ev.reason }
+        for (const w of this.closePending) w.resolve(this.closed)
+        this.closePending = []
       })
     })
   }
@@ -136,60 +132,39 @@ export class WsClient {
   }
 
   waitFor(type: string, timeoutMs = 30_000): Promise<ServerMessage> {
-    // Check if we already have a matching message
     const existing = this.messages.find(m => m.type === type)
     if (existing) return Promise.resolve(existing)
 
     return new Promise<ServerMessage>((resolve, reject) => {
       const timer = setTimeout(() => {
-        reject(new Error(`Timed out waiting for message type "${type}" (got: ${this.messages.map(m => m.type).join(', ')})`))
+        reject(new Error(`Timed out waiting for "${type}" (got: ${this.messages.map(m => m.type).join(', ')})`))
       }, timeoutMs)
 
-      this.messageWaiters.push({
+      this.pending.push({
         type,
-        resolve: (msg) => {
-          clearTimeout(timer)
-          resolve(msg)
-        },
+        resolve: (msg) => { clearTimeout(timer); resolve(msg) },
         reject,
       })
     })
   }
 
-  waitForClose(timeoutMs = 30_000): Promise<{ code: number; reason: string }> {
-    if (this.closeEvent) return Promise.resolve(this.closeEvent)
+  waitClose(timeoutMs = 30_000): Promise<{ code: number; reason: string }> {
+    if (this.closed) return Promise.resolve(this.closed)
 
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         reject(new Error('Timed out waiting for close'))
       }, timeoutMs)
 
-      this.closeWaiters.push({
-        resolve: (ev) => {
-          clearTimeout(timer)
-          resolve(ev)
-        },
+      this.closePending.push({
+        resolve: (ev) => { clearTimeout(timer); resolve(ev) },
         reject,
       })
     })
   }
 
-  /** Wait until we have at least `count` messages of the given type. */
-  async waitForCount(type: string, count: number, timeoutMs = 30_000): Promise<ServerMessage[]> {
-    const deadline = Date.now() + timeoutMs
-    while (Date.now() < deadline) {
-      const matching = this.messages.filter(m => m.type === type)
-      if (matching.length >= count) return matching
-      await new Promise(r => setTimeout(r, 50))
-    }
-    const matching = this.messages.filter(m => m.type === type)
-    if (matching.length >= count) return matching
-    throw new Error(`Timed out waiting for ${count} "${type}" messages (got ${matching.length})`)
-  }
-
-  /** Wait for the full stream sequence: stream_start, delta(s), stream_done */
-  async waitForStreamComplete(timeoutMs = 30_000): Promise<void> {
-    await this.waitFor('stream_done', timeoutMs)
+  waitDone(timeoutMs = 30_000): Promise<ServerMessage> {
+    return this.waitFor('stream_done', timeoutMs)
   }
 
   close(): void {

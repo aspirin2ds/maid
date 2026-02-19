@@ -9,20 +9,23 @@ import {
   type E2eTestEnv,
 } from './helpers/testcontainers'
 import {
-  createTestServer,
+  startServer,
   WsClient,
-  type TestServer,
+  type WsServer,
 } from './helpers/ws-server'
 
-const TEST_USER_ID = 'e2e-test-user'
-const STREAM_TIMEOUT = 30_000
+const USER_ID = 'e2e-test-user'
+const TIMEOUT = 30_000
+const LONG_PROMPT = 'Write a very long essay about the history of computing'
+
+const wait = (ms: number) => new Promise(r => setTimeout(r, ms))
 
 let env: E2eTestEnv | undefined
-let server: TestServer | undefined
+let server: WsServer | undefined
 
 beforeAll(async () => {
   env = await setupE2eTestEnv()
-  server = createTestServer(env)
+  server = startServer(env)
 }, 120_000)
 
 afterAll(async () => {
@@ -30,366 +33,247 @@ afterAll(async () => {
   await teardownE2eTestEnv(env)
 })
 
-function wsUrl() {
-  return server!.url
+function connect(params: Record<string, string>) {
+  const client = new WsClient()
+  return client.connect(server!.url, params).then(() => client)
+}
+
+function chatClient(extra: Record<string, string> = {}) {
+  return connect({ maidId: 'chat', userId: USER_ID, ...extra })
 }
 
 describe('ws e2e', () => {
-  // 1. Full input flow
-  test('input: creates session, streams response, saves to DB', async () => {
-    const client = new WsClient()
-    await client.connect(wsUrl(), { maidId: 'chat', userId: TEST_USER_ID })
 
-    client.send({ type: 'input', content: 'Say exactly: "pong"' })
+  describe('input', () => {
+    test('creates session, streams response, saves to DB', async () => {
+      const ws = await chatClient()
 
-    await client.waitForStreamComplete(STREAM_TIMEOUT)
-    client.close()
+      ws.send({ type: 'input', content: 'Say exactly: "pong"' })
+      await ws.waitDone(TIMEOUT)
+      ws.close()
 
-    // Verify message sequence
-    const types = client.messages.map(m => m.type)
-    expect(types).toContain('session_created')
-    expect(types).toContain('stream_start')
-    expect(types).toContain('stream_text_delta')
-    expect(types).toContain('stream_done')
+      const types = ws.messages.map(m => m.type)
+      expect(types).toContain('session_created')
+      expect(types).toContain('stream_start')
+      expect(types).toContain('stream_text_delta')
+      expect(types).toContain('stream_done')
 
-    // session_created comes before stream_start
-    const sessionCreatedIdx = types.indexOf('session_created')
-    const streamStartIdx = types.indexOf('stream_start')
-    expect(sessionCreatedIdx).toBeLessThan(streamStartIdx)
+      expect(types.indexOf('session_created')).toBeLessThan(types.indexOf('stream_start'))
 
-    // Extract sessionId from session_created
-    const sessionCreatedMsg = client.messages.find(m => m.type === 'session_created')!
-    const sessionId = (sessionCreatedMsg as any).sessionId as number
-    expect(sessionId).toBeGreaterThan(0)
+      const sid = (ws.messages.find(m => m.type === 'session_created') as any).sessionId as number
+      expect(sid).toBeGreaterThan(0)
+      expect((ws.messages.find(m => m.type === 'stream_done') as any).sessionId).toBe(sid)
 
-    // Verify stream_done has same sessionId
-    const streamDoneMsg = client.messages.find(m => m.type === 'stream_done')!
-    expect((streamDoneMsg as any).sessionId).toBe(sessionId)
+      const deltas = ws.messages
+        .filter(m => m.type === 'stream_text_delta')
+        .map(m => (m as any).delta)
+        .join('')
+      expect(deltas.length).toBeGreaterThan(0)
 
-    // Verify deltas form a non-empty string
-    const deltas = client.messages
-      .filter(m => m.type === 'stream_text_delta')
-      .map(m => (m as any).delta)
-      .join('')
-    expect(deltas.length).toBeGreaterThan(0)
+      const [row] = await env!.db.select().from(sessions).where(eq(sessions.id, sid))
+      expect(row).toBeDefined()
+      expect(row.userId).toBe(USER_ID)
 
-    // Verify DB: session exists
-    const [dbSession] = await env!.db
-      .select()
-      .from(sessions)
-      .where(eq(sessions.id, sessionId))
-    expect(dbSession).toBeDefined()
-    expect(dbSession.userId).toBe(TEST_USER_ID)
+      const rows = await env!.db.select().from(messages).where(eq(messages.sessionId, sid))
+      expect(rows.length).toBe(2)
+      expect(rows.find(m => m.role === 'user')?.content).toBe('Say exactly: "pong"')
+      expect(rows.find(m => m.role === 'assistant')!.content.length).toBeGreaterThan(0)
+    }, TIMEOUT + 10_000)
+  })
 
-    // Verify DB: user + assistant messages saved
-    const dbMessages = await env!.db
-      .select()
-      .from(messages)
-      .where(eq(messages.sessionId, sessionId))
-    expect(dbMessages.length).toBe(2)
-    expect(dbMessages.find(m => m.role === 'user')?.content).toBe('Say exactly: "pong"')
-    expect(dbMessages.find(m => m.role === 'assistant')).toBeDefined()
-    expect(dbMessages.find(m => m.role === 'assistant')!.content.length).toBeGreaterThan(0)
-  }, STREAM_TIMEOUT + 10_000)
+  describe('welcome', () => {
+    test('creates session, streams welcome, saves only assistant message', async () => {
+      const ws = await chatClient()
 
-  // 2. Welcome flow
-  test('welcome: creates session, streams welcome message', async () => {
-    const client = new WsClient()
-    await client.connect(wsUrl(), { maidId: 'chat', userId: TEST_USER_ID })
+      ws.send({ type: 'welcome' })
+      await ws.waitDone(TIMEOUT)
+      ws.close()
 
-    client.send({ type: 'welcome' })
+      const types = ws.messages.map(m => m.type)
+      expect(types).toContain('session_created')
+      expect(types).toContain('stream_start')
+      expect(types).toContain('stream_text_delta')
+      expect(types).toContain('stream_done')
 
-    await client.waitForStreamComplete(STREAM_TIMEOUT)
-    client.close()
+      const sid = (ws.messages.find(m => m.type === 'session_created') as any).sessionId
+      const rows = await env!.db.select().from(messages).where(eq(messages.sessionId, sid))
+      expect(rows.length).toBe(1)
+      expect(rows[0].role).toBe('assistant')
+    }, TIMEOUT + 10_000)
+  })
 
-    const types = client.messages.map(m => m.type)
-    expect(types).toContain('session_created')
-    expect(types).toContain('stream_start')
-    expect(types).toContain('stream_text_delta')
-    expect(types).toContain('stream_done')
+  describe('existing session', () => {
+    test('no session_created emitted', async () => {
+      const [seeded] = await env!.db
+        .insert(sessions)
+        .values({ userId: USER_ID, title: null, metadata: {} })
+        .returning({ id: sessions.id })
 
-    // Welcome does NOT save a user message — only assistant
-    const sessionId = (client.messages.find(m => m.type === 'session_created') as any).sessionId
-    const dbMessages = await env!.db
-      .select()
-      .from(messages)
-      .where(eq(messages.sessionId, sessionId))
-    expect(dbMessages.length).toBe(1)
-    expect(dbMessages[0].role).toBe('assistant')
-  }, STREAM_TIMEOUT + 10_000)
+      const ws = await chatClient({ sessionId: String(seeded.id) })
 
-  // 3. Existing session — no session_created
-  test('existing session: no session_created emitted', async () => {
-    // Seed a session in DB
-    const [seeded] = await env!.db
-      .insert(sessions)
-      .values({ userId: TEST_USER_ID, title: null, metadata: {} })
-      .returning({ id: sessions.id })
+      ws.send({ type: 'input', content: 'Hello again' })
+      await ws.waitDone(TIMEOUT)
+      ws.close()
 
-    const client = new WsClient()
-    await client.connect(wsUrl(), {
-      maidId: 'chat',
-      userId: TEST_USER_ID,
-      sessionId: String(seeded.id),
+      const types = ws.messages.map(m => m.type)
+      expect(types).not.toContain('session_created')
+      expect(types).toContain('stream_start')
+      expect(types).toContain('stream_done')
+      expect((ws.messages.find(m => m.type === 'stream_done') as any).sessionId).toBe(seeded.id)
+    }, TIMEOUT + 10_000)
+  })
+
+  describe('abort', () => {
+    test('no error sent to client', async () => {
+      const ws = await chatClient()
+
+      ws.send({ type: 'input', content: LONG_PROMPT })
+      await ws.waitFor('stream_start', TIMEOUT)
+      ws.send({ type: 'abort' })
+      await wait(1000)
+
+      expect(ws.messages.filter(m => m.type === 'error')).toHaveLength(0)
+      ws.close()
+    }, TIMEOUT + 10_000)
+
+    test('no stream_done emitted', async () => {
+      const ws = await chatClient()
+
+      ws.send({ type: 'input', content: LONG_PROMPT })
+      await ws.waitFor('stream_start', TIMEOUT)
+      ws.send({ type: 'abort' })
+      await wait(1000)
+
+      expect(ws.messages.map(m => m.type)).not.toContain('stream_done')
+      ws.close()
+    }, TIMEOUT + 10_000)
+
+    test('user message saved, no assistant message in DB', async () => {
+      const ws = await chatClient()
+
+      ws.send({ type: 'input', content: LONG_PROMPT })
+      await ws.waitFor('stream_start', TIMEOUT)
+      ws.send({ type: 'abort' })
+      await wait(1000)
+
+      const sid = (ws.messages.find(m => m.type === 'session_created') as any).sessionId as number
+      const rows = await env!.db.select().from(messages).where(eq(messages.sessionId, sid))
+      expect(rows.find(m => m.role === 'user')).toBeDefined()
+      expect(rows.find(m => m.role === 'assistant')).toBeUndefined()
+
+      ws.close()
+    }, TIMEOUT + 10_000)
+
+    test('safe when no stream is active', async () => {
+      const ws = await chatClient()
+
+      ws.send({ type: 'abort' })
+      await wait(500)
+
+      expect(ws.messages.filter(m => m.type === 'error')).toHaveLength(0)
+
+      ws.send({ type: 'bye' })
+      expect((await ws.waitClose()).code).toBe(1000)
     })
 
-    client.send({ type: 'input', content: 'Hello again' })
+    test('deltas stop arriving', async () => {
+      const ws = await chatClient()
 
-    await client.waitForStreamComplete(STREAM_TIMEOUT)
-    client.close()
+      ws.send({ type: 'input', content: LONG_PROMPT })
+      await ws.waitFor('stream_text_delta', TIMEOUT)
+      ws.send({ type: 'abort' })
 
-    const types = client.messages.map(m => m.type)
-    expect(types).not.toContain('session_created')
-    expect(types).toContain('stream_start')
-    expect(types).toContain('stream_done')
+      await wait(1000)
+      const count = ws.messages.filter(m => m.type === 'stream_text_delta').length
 
-    // stream_done should reference the seeded session
-    const streamDoneMsg = client.messages.find(m => m.type === 'stream_done')!
-    expect((streamDoneMsg as any).sessionId).toBe(seeded.id)
-  }, STREAM_TIMEOUT + 10_000)
+      await wait(500)
+      expect(ws.messages.filter(m => m.type === 'stream_text_delta').length).toBe(count)
 
-  // 4. Abort mid-stream — no error to client
-  test('abort: stops stream without error to client', async () => {
-    const client = new WsClient()
-    await client.connect(wsUrl(), { maidId: 'chat', userId: TEST_USER_ID })
+      ws.close()
+    }, TIMEOUT + 10_000)
 
-    client.send({ type: 'input', content: 'Write a very long essay about the history of computing' })
+    test('cancels queued input', async () => {
+      const ws = await chatClient()
 
-    // Wait for stream to start then abort
-    await client.waitFor('stream_start', STREAM_TIMEOUT)
-    client.send({ type: 'abort' })
+      ws.send({ type: 'input', content: LONG_PROMPT })
+      ws.send({ type: 'input', content: 'Now write another long essay about mathematics' })
 
-    // Give some time for the abort to take effect
-    await new Promise(r => setTimeout(r, 1000))
+      await ws.waitFor('stream_start', TIMEOUT)
+      ws.send({ type: 'abort' })
+      await wait(1500)
 
-    // Should not have received an error message
-    const errors = client.messages.filter(m => m.type === 'error')
-    expect(errors).toHaveLength(0)
+      expect(ws.messages.filter(m => m.type === 'stream_start')).toHaveLength(1)
+      expect(ws.messages.filter(m => m.type === 'error')).toHaveLength(0)
 
-    client.close()
-  }, STREAM_TIMEOUT + 10_000)
-
-  // 4a. Abort mid-stream — no stream_done emitted
-  test('abort: no stream_done after abort', async () => {
-    const client = new WsClient()
-    await client.connect(wsUrl(), { maidId: 'chat', userId: TEST_USER_ID })
-
-    client.send({ type: 'input', content: 'Write a very long essay about the history of computing' })
-
-    await client.waitFor('stream_start', STREAM_TIMEOUT)
-    client.send({ type: 'abort' })
-
-    await new Promise(r => setTimeout(r, 1000))
-
-    // stream_done should NOT be present — the stream was aborted before completing
-    const types = client.messages.map(m => m.type)
-    expect(types).not.toContain('stream_done')
-
-    client.close()
-  }, STREAM_TIMEOUT + 10_000)
-
-  // 4b. Abort mid-stream — DB state: user message saved, no assistant message
-  test('abort: user message saved but no assistant message in DB', async () => {
-    const client = new WsClient()
-    await client.connect(wsUrl(), { maidId: 'chat', userId: TEST_USER_ID })
-
-    client.send({ type: 'input', content: 'Write a very long essay about the history of computing' })
-
-    await client.waitFor('stream_start', STREAM_TIMEOUT)
-    client.send({ type: 'abort' })
-
-    await new Promise(r => setTimeout(r, 1000))
-
-    // session_created should still have fired (session was created before streaming)
-    const sessionCreatedMsg = client.messages.find(m => m.type === 'session_created')
-    expect(sessionCreatedMsg).toBeDefined()
-    const sessionId = (sessionCreatedMsg as any).sessionId as number
-
-    // User message is saved before streaming starts, so it should exist
-    const dbMessages = await env!.db
-      .select()
-      .from(messages)
-      .where(eq(messages.sessionId, sessionId))
-    const userMsg = dbMessages.find(m => m.role === 'user')
-    expect(userMsg).toBeDefined()
-
-    // Assistant message should NOT exist — the stream was aborted
-    const assistantMsg = dbMessages.find(m => m.role === 'assistant')
-    expect(assistantMsg).toBeUndefined()
-
-    client.close()
-  }, STREAM_TIMEOUT + 10_000)
-
-  // 4c. Abort with no active stream — safe no-op
-  test('abort: safe when no stream is active', async () => {
-    const client = new WsClient()
-    await client.connect(wsUrl(), { maidId: 'chat', userId: TEST_USER_ID })
-
-    // Send abort immediately — no input was ever sent, no stream exists
-    client.send({ type: 'abort' })
-
-    await new Promise(r => setTimeout(r, 500))
-
-    // No error, no crash
-    const errors = client.messages.filter(m => m.type === 'error')
-    expect(errors).toHaveLength(0)
-
-    // Connection still usable
-    client.send({ type: 'bye' })
-    const closeEvent = await client.waitForClose()
-    expect(closeEvent.code).toBe(1000)
+      ws.close()
+    }, TIMEOUT + 10_000)
   })
 
-  // 4d. Abort stops deltas — no new deltas arrive after abort
-  test('abort: no new deltas arrive after abort', async () => {
-    const client = new WsClient()
-    await client.connect(wsUrl(), { maidId: 'chat', userId: TEST_USER_ID })
+  describe('bye', () => {
+    test('closes with code 1000', async () => {
+      const ws = await chatClient()
 
-    client.send({ type: 'input', content: 'Write a very long essay about the history of computing' })
-
-    // Wait for at least one delta to confirm streaming has started
-    await client.waitFor('stream_text_delta', STREAM_TIMEOUT)
-    const deltaCountBefore = client.messages.filter(m => m.type === 'stream_text_delta').length
-
-    client.send({ type: 'abort' })
-
-    // Wait for abort to propagate
-    await new Promise(r => setTimeout(r, 1000))
-
-    const deltaCountAfter = client.messages.filter(m => m.type === 'stream_text_delta').length
-
-    // Some deltas may have been in-flight when we aborted, but the count should
-    // have stopped growing. Verify no new deltas arrive after the settle period.
-    await new Promise(r => setTimeout(r, 500))
-    const deltaCountFinal = client.messages.filter(m => m.type === 'stream_text_delta').length
-    expect(deltaCountFinal).toBe(deltaCountAfter)
-
-    client.close()
-  }, STREAM_TIMEOUT + 10_000)
-
-  // 4e. Bye during active stream — closes cleanly
-  test('bye during stream: closes with 1000, no error', async () => {
-    const client = new WsClient()
-    await client.connect(wsUrl(), { maidId: 'chat', userId: TEST_USER_ID })
-
-    client.send({ type: 'input', content: 'Write a very long essay about the history of computing' })
-
-    await client.waitFor('stream_start', STREAM_TIMEOUT)
-    client.send({ type: 'bye' })
-
-    const closeEvent = await client.waitForClose()
-    expect(closeEvent.code).toBe(1000)
-
-    // No error should have been sent
-    const errors = client.messages.filter(m => m.type === 'error')
-    expect(errors).toHaveLength(0)
-  }, STREAM_TIMEOUT + 10_000)
-
-  // 4f. Abort queued input — second input never starts streaming
-  test('abort: cancels queued input that has not started', async () => {
-    const client = new WsClient()
-    await client.connect(wsUrl(), { maidId: 'chat', userId: TEST_USER_ID })
-
-    // Send two inputs rapidly — the second is queued behind the first
-    client.send({ type: 'input', content: 'Write a very long essay about the history of computing' })
-    client.send({ type: 'input', content: 'Now write another long essay about mathematics' })
-
-    // Wait for the first stream to start
-    await client.waitFor('stream_start', STREAM_TIMEOUT)
-
-    // Abort clears the queue and cancels the active stream
-    client.send({ type: 'abort' })
-
-    await new Promise(r => setTimeout(r, 1500))
-
-    // Should only have one stream_start (the second input was cleared from the queue)
-    const streamStarts = client.messages.filter(m => m.type === 'stream_start')
-    expect(streamStarts).toHaveLength(1)
-
-    // No error
-    const errors = client.messages.filter(m => m.type === 'error')
-    expect(errors).toHaveLength(0)
-
-    client.close()
-  }, STREAM_TIMEOUT + 10_000)
-
-  // 5. Bye
-  test('bye: closes connection with code 1000', async () => {
-    const client = new WsClient()
-    await client.connect(wsUrl(), { maidId: 'chat', userId: TEST_USER_ID })
-
-    client.send({ type: 'bye' })
-
-    const closeEvent = await client.waitForClose()
-    expect(closeEvent.code).toBe(1000)
-  })
-
-  // 6. Invalid JSON
-  test('invalid JSON: sends error, connection stays open', async () => {
-    const client = new WsClient()
-    await client.connect(wsUrl(), { maidId: 'chat', userId: TEST_USER_ID })
-
-    client.sendRaw('not json at all')
-
-    const errorMsg = await client.waitFor('error')
-    expect((errorMsg as any).message).toBe('invalid JSON')
-
-    // Connection still open — can still send bye
-    client.send({ type: 'bye' })
-    const closeEvent = await client.waitForClose()
-    expect(closeEvent.code).toBe(1000)
-  })
-
-  // 7. Unknown maid
-  test('unknown maidId: sends error and closes with 1008', async () => {
-    const client = new WsClient()
-    await client.connect(wsUrl(), { maidId: 'nonexistent', userId: TEST_USER_ID })
-
-    // open handler fires withMaid check, which sends error + closes
-    const errorMsg = await client.waitFor('error')
-    expect((errorMsg as any).message).toContain('unknown maidId')
-
-    const closeEvent = await client.waitForClose()
-    expect(closeEvent.code).toBe(1008)
-  })
-
-  // 8. Session not found
-  test('session not found: sends error and closes with 1008', async () => {
-    const client = new WsClient()
-    await client.connect(wsUrl(), {
-      maidId: 'chat',
-      userId: TEST_USER_ID,
-      sessionId: '999999',
+      ws.send({ type: 'bye' })
+      expect((await ws.waitClose()).code).toBe(1000)
     })
 
-    client.send({ type: 'input', content: 'Hello' })
+    test('during active stream: closes cleanly', async () => {
+      const ws = await chatClient()
 
-    const errorMsg = await client.waitFor('error')
-    expect((errorMsg as any).message).toContain('not found')
+      ws.send({ type: 'input', content: LONG_PROMPT })
+      await ws.waitFor('stream_start', TIMEOUT)
+      ws.send({ type: 'bye' })
 
-    const closeEvent = await client.waitForClose()
-    expect(closeEvent.code).toBe(1008)
+      expect((await ws.waitClose()).code).toBe(1000)
+      expect(ws.messages.filter(m => m.type === 'error')).toHaveLength(0)
+    }, TIMEOUT + 10_000)
   })
 
-  // 9. Disconnect mid-stream — no unhandled errors
-  test('disconnect mid-stream: no server crash', async () => {
-    const client = new WsClient()
-    await client.connect(wsUrl(), { maidId: 'chat', userId: TEST_USER_ID })
+  describe('errors', () => {
+    test('invalid JSON: sends error, connection stays open', async () => {
+      const ws = await chatClient()
 
-    client.send({ type: 'input', content: 'Write a very long essay about the history of computing' })
+      ws.sendRaw('not json at all')
 
-    // Wait for stream to start then disconnect abruptly
-    await client.waitFor('stream_start', STREAM_TIMEOUT)
-    client.close()
+      const err = await ws.waitFor('error')
+      expect((err as any).message).toBe('invalid JSON')
 
-    // Give server time to process the close
-    await new Promise(r => setTimeout(r, 1000))
+      ws.send({ type: 'bye' })
+      expect((await ws.waitClose()).code).toBe(1000)
+    })
 
-    // Verify server is still healthy by connecting again
-    const healthCheck = new WsClient()
-    await healthCheck.connect(wsUrl(), { maidId: 'chat', userId: TEST_USER_ID })
-    healthCheck.send({ type: 'bye' })
-    const closeEvent = await healthCheck.waitForClose()
-    expect(closeEvent.code).toBe(1000)
-  }, STREAM_TIMEOUT + 10_000)
+    test('unknown maidId: error + close 1008', async () => {
+      const ws = await connect({ maidId: 'nonexistent', userId: USER_ID })
+
+      const err = await ws.waitFor('error')
+      expect((err as any).message).toContain('unknown maidId')
+      expect((await ws.waitClose()).code).toBe(1008)
+    })
+
+    test('session not found: error + close 1008', async () => {
+      const ws = await chatClient({ sessionId: '999999' })
+
+      ws.send({ type: 'input', content: 'Hello' })
+
+      const err = await ws.waitFor('error')
+      expect((err as any).message).toContain('not found')
+      expect((await ws.waitClose()).code).toBe(1008)
+    })
+  })
+
+  describe('disconnect', () => {
+    test('mid-stream: server stays healthy', async () => {
+      const ws = await chatClient()
+
+      ws.send({ type: 'input', content: LONG_PROMPT })
+      await ws.waitFor('stream_start', TIMEOUT)
+      ws.close()
+
+      await wait(1000)
+
+      const probe = await chatClient()
+      probe.send({ type: 'bye' })
+      expect((await probe.waitClose()).code).toBe(1000)
+    }, TIMEOUT + 10_000)
+  })
 })
