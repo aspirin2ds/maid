@@ -10,6 +10,7 @@ import { createStreamSocketData, streamWebSocketHandlers } from './ws'
 
 import * as schema from './db/schema'
 import z from 'zod'
+
 const databaseClient = new Pool({ connectionString: env.DATABASE_URL })
 const database = drizzle(databaseClient, { schema })
 
@@ -38,9 +39,49 @@ function createUserServices(userId: string) {
   }
 }
 
+type WsConnectionKey = {
+  userId: string
+  sessionId?: number
+  expiresAt: number
+}
+
+const wsConnectionKeys = new Map<string, WsConnectionKey>()
+
+function createWsConnectionKey(data: Omit<WsConnectionKey, 'expiresAt'>): { key: string, expiresAt: number } {
+  const key = Bun.randomUUIDv7()
+  const expiresAt = Date.now() + env.WS_CONNECTION_KEY_TTL_MS
+  wsConnectionKeys.set(key, {
+    ...data,
+    expiresAt,
+  })
+  return { key, expiresAt }
+}
+
+function consumeWsConnectionKey(key: string): Omit<WsConnectionKey, 'expiresAt'> | null {
+  const found = wsConnectionKeys.get(key)
+  if (!found) return null
+  wsConnectionKeys.delete(key)
+  if (found.expiresAt <= Date.now()) return null
+  return {
+    userId: found.userId,
+    sessionId: found.sessionId,
+  }
+}
+
+function extractBearerToken(authorizationHeader: string | null): string | null {
+  if (!authorizationHeader) return null
+
+  const [scheme, token] = authorizationHeader.split(' ', 2)
+  if (!scheme || !token) return null
+  if (scheme.toLowerCase() !== 'bearer') return null
+  if (!token.trim()) return null
+  return token.trim()
+}
+
 const wsRequestQuery = z.object({
-  token: z.string().min(1),
   maidId: z.string().min(1),
+  token: z.string().min(1).optional(),
+  connectionKey: z.string().min(1).optional(),
   sessionId: z.coerce.number().int().optional(),
 })
 
@@ -49,14 +90,22 @@ type WsRequest = z.infer<typeof wsRequestQuery>
 function parseWsRequest(url: URL): WsRequest | Response {
   const token = url.searchParams.get('token') ?? url.searchParams.get('authToken')
   const parsedQuery = wsRequestQuery.safeParse({
-    token: token ?? undefined,
     maidId: url.searchParams.get('maidId') ?? undefined,
+    token: token ?? undefined,
+    connectionKey: url.searchParams.get('connectionKey') ?? undefined,
     sessionId: url.searchParams.get('sessionId') ?? undefined,
   })
 
   if (!parsedQuery.success) {
     return Response.json(
       { message: parsedQuery.error.issues.map((issue) => issue.message).join('; ') },
+      { status: 400 },
+    )
+  }
+
+  if (!parsedQuery.data.token && !parsedQuery.data.connectionKey) {
+    return Response.json(
+      { message: 'token or connectionKey is required' },
       { status: 400 },
     )
   }
@@ -103,6 +152,10 @@ async function getAuthUserId(token: string): Promise<string | Response> {
   return authSess.user.id
 }
 
+const wsConnectionKeyRequestQuery = z.object({
+  sessionId: z.coerce.number().int().optional(),
+})
+
 const server = Bun.serve({
   port: env.PORT,
   websocket: streamWebSocketHandlers,
@@ -117,10 +170,23 @@ const server = Bun.serve({
       const wsRequest = parseWsRequest(url)
       if (wsRequest instanceof Response) return wsRequest
 
-      const { token, maidId, sessionId } = wsRequest
+      const { token, connectionKey, maidId } = wsRequest
 
-      const userId = await getAuthUserId(token)
-      if (userId instanceof Response) return userId
+      let userId: string
+      let sessionId: number | undefined = wsRequest.sessionId
+
+      if (connectionKey) {
+        const keyData = consumeWsConnectionKey(connectionKey)
+        if (!keyData) {
+          return Response.json({ message: 'invalid or expired connection key' }, { status: 401 })
+        }
+        userId = keyData.userId
+        if (keyData.sessionId !== undefined) sessionId = keyData.sessionId
+      } else {
+        const authenticatedUserId = await getAuthUserId(token!)
+        if (authenticatedUserId instanceof Response) return authenticatedUserId
+        userId = authenticatedUserId
+      }
 
       const { sessionService, memoryService } = createUserServices(userId)
 
@@ -141,6 +207,52 @@ const server = Bun.serve({
         return Response.json({ message: 'WebSocket upgrade failed' }, { status: 500 })
       }
     }
+
+    if (url.pathname === '/ws/connection-key' && request.method === 'GET') {
+      const token = extractBearerToken(request.headers.get('authorization'))
+      if (!token) {
+        return Response.json({ message: 'missing bearer token' }, { status: 401 })
+      }
+
+      const userId = await getAuthUserId(token)
+      if (userId instanceof Response) return userId
+
+      const parsedQuery = wsConnectionKeyRequestQuery.safeParse({
+        sessionId: url.searchParams.get('sessionId') ?? undefined,
+      })
+      if (!parsedQuery.success) {
+        return Response.json(
+          { message: parsedQuery.error.issues.map((issue) => issue.message).join('; ') },
+          { status: 400 },
+        )
+      }
+
+      const requestedSessionId = parsedQuery.data.sessionId
+      if (requestedSessionId !== undefined) {
+        const { sessionService } = createUserServices(userId)
+        try {
+          await sessionService.ensure(requestedSessionId)
+        } catch {
+          return Response.json({ message: 'session not found' }, { status: 404 })
+        }
+      }
+
+      const created = createWsConnectionKey({
+        userId,
+        sessionId: requestedSessionId,
+      })
+
+      return Response.json(
+        {
+          connectionKey: created.key,
+          expiresAt: new Date(created.expiresAt).toISOString(),
+          expiresInMs: Math.max(0, created.expiresAt - Date.now()),
+          sessionId: requestedSessionId,
+        },
+        { status: 201 },
+      )
+    }
+
     return Response.json({ message: 'not found' }, { status: 404 })
   },
 })

@@ -9,6 +9,7 @@ import {
   type E2eTestEnv,
 } from './helpers/testcontainers'
 import {
+  issueConnectionKey,
   startServer,
   WsClient,
   type WsServer,
@@ -38,8 +39,15 @@ function connect(params: Record<string, string>) {
   return client.connect(server!.url, params).then(() => client)
 }
 
-function chatClient(extra: Record<string, string> = {}) {
-  return connect({ maidId: 'chat', userId: USER_ID, ...extra })
+async function chatClient(extra: { sessionId?: string, userId?: string } = {}) {
+  const userId = extra.userId ?? USER_ID
+  const connectionKey = await issueConnectionKey(server!, userId, extra.sessionId)
+  return connect({ maidId: 'chat', connectionKey })
+}
+
+async function connectWithConnectionKey(maidId: string, userId = USER_ID, sessionId?: string) {
+  const connectionKey = await issueConnectionKey(server!, userId, sessionId)
+  return connect({ maidId, connectionKey })
 }
 
 describe('ws e2e', () => {
@@ -243,21 +251,15 @@ describe('ws e2e', () => {
     })
 
     test('unknown maidId: error + close 1008', async () => {
-      const ws = await connect({ maidId: 'nonexistent', userId: USER_ID })
+      const ws = await connectWithConnectionKey('nonexistent')
 
       const err = await ws.waitFor('error')
       expect((err as any).message).toContain('unknown maidId')
       expect((await ws.waitClose()).code).toBe(1008)
     })
 
-    test('session not found: error + close 1008', async () => {
-      const ws = await chatClient({ sessionId: '999999' })
-
-      ws.send({ type: 'input', content: 'Hello' })
-
-      const err = await ws.waitFor('error')
-      expect((err as any).message).toContain('not found')
-      expect((await ws.waitClose()).code).toBe(1008)
+    test('session not found: connection key request fails', async () => {
+      await expect(chatClient({ sessionId: '999999' })).rejects.toThrow('Failed to issue connection key: 404')
     })
   })
 

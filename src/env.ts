@@ -83,6 +83,8 @@ export const env = {
   get MEMORY_EXTRACTION_TOP_K() { return getNumber('MEMORY_EXTRACTION_TOP_K', 5) },
   get MEMORY_EXTRACTION_RETRIES() { return getNumber('MEMORY_EXTRACTION_RETRIES', 3) },
 
+  get WS_CONNECTION_KEY_TTL_MS() { return getNumber('WS_CONNECTION_KEY_TTL_MS', 60_000) },
+
   get MIGRATIONS_TIMEOUT_MS() { return getNumber('MIGRATIONS_TIMEOUT_MS', 30_000) },
   get MIGRATIONS_RETRY_DELAY_MS() { return getNumber('MIGRATIONS_RETRY_DELAY_MS', 500) },
   get MIGRATIONS_FOLDER() { return process.env.MIGRATIONS_FOLDER ?? './drizzle' },

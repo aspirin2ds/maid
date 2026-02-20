@@ -7,6 +7,13 @@ import type { ServerMessage } from '../../../src/ws/schema'
 import type { E2eTestEnv } from './testcontainers'
 
 const USER_ID = 'e2e-test-user'
+const CONNECTION_KEY_TTL_MS = 60_000
+
+type ConnectionKeyData = {
+  userId: string
+  sessionId?: number
+  expiresAt: number
+}
 
 export type WsServer = {
   url: string
@@ -15,11 +22,74 @@ export type WsServer = {
 }
 
 export function startServer(env: E2eTestEnv): WsServer {
+  const connectionKeys = new Map<string, ConnectionKeyData>()
+
+  const createConnectionKey = (userId: string, sessionId?: number): string => {
+    const key = Bun.randomUUIDv7()
+    connectionKeys.set(key, {
+      userId,
+      sessionId,
+      expiresAt: Date.now() + CONNECTION_KEY_TTL_MS,
+    })
+    return key
+  }
+
+  const consumeConnectionKey = (key: string): { userId: string, sessionId?: number } | null => {
+    const found = connectionKeys.get(key)
+    if (!found) return null
+    connectionKeys.delete(key)
+    if (found.expiresAt <= Date.now()) return null
+    return {
+      userId: found.userId,
+      sessionId: found.sessionId,
+    }
+  }
+
+  const getBearerToken = (request: Request): string | null => {
+    const raw = request.headers.get('authorization')
+    if (!raw) return null
+    const [scheme, token] = raw.split(' ', 2)
+    if (!scheme || !token) return null
+    if (scheme.toLowerCase() !== 'bearer') return null
+    return token
+  }
+
   const server = Bun.serve({
     port: 0,
     websocket: streamWebSocketHandlers,
-    fetch(request, appServer) {
+    async fetch(request, appServer) {
       const url = new URL(request.url)
+
+      if (url.pathname === '/ws/connection-key' && request.method === 'GET') {
+        const token = getBearerToken(request)
+        if (!token) {
+          return Response.json({ message: 'missing bearer token' }, { status: 401 })
+        }
+
+        const parsedSessionId = url.searchParams.get('sessionId')
+        const sessionId = parsedSessionId ? Number(parsedSessionId) : undefined
+        if (parsedSessionId && (!Number.isInteger(sessionId) || sessionId! <= 0)) {
+          return Response.json({ message: 'Invalid input: expected number, received NaN' }, { status: 400 })
+        }
+
+        const userId = token
+        if (sessionId !== undefined) {
+          const sessionService = createSessionService({
+            database: env.db,
+            redisClient: env.redisClient,
+            userId,
+          })
+
+          try {
+            await sessionService.ensure(sessionId)
+          } catch {
+            return Response.json({ message: 'session not found' }, { status: 404 })
+          }
+        }
+
+        const key = createConnectionKey(userId, sessionId)
+        return Response.json({ connectionKey: key }, { status: 201 })
+      }
 
       if (url.pathname !== '/ws' || request.method !== 'GET') {
         return new Response('not found', { status: 404 })
@@ -30,10 +100,18 @@ export function startServer(env: E2eTestEnv): WsServer {
         return Response.json({ message: 'maidId required' }, { status: 400 })
       }
 
-      const userId = url.searchParams.get('userId') ?? USER_ID
-      const sessionId = url.searchParams.get('sessionId')
-        ? Number(url.searchParams.get('sessionId'))
-        : undefined
+      const connectionKey = url.searchParams.get('connectionKey')
+      if (!connectionKey) {
+        return Response.json({ message: 'connectionKey required' }, { status: 401 })
+      }
+
+      const resolved = consumeConnectionKey(connectionKey)
+      if (!resolved) {
+        return Response.json({ message: 'invalid or expired connection key' }, { status: 401 })
+      }
+
+      const userId = resolved.userId ?? USER_ID
+      const sessionId = resolved.sessionId
 
       const sessionService = createSessionService({
         database: env.db,
@@ -172,4 +250,27 @@ export class WsClient {
       this.ws.close()
     }
   }
+}
+
+export async function issueConnectionKey(server: WsServer, token: string, sessionId?: string): Promise<string> {
+  const url = new URL(`http://localhost:${server.port}/ws/connection-key`)
+  if (sessionId) url.searchParams.set('sessionId', sessionId)
+
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: {
+      authorization: `Bearer ${token}`,
+    },
+  })
+
+  if (!response.ok) {
+    throw new Error(`Failed to issue connection key: ${response.status}`)
+  }
+
+  const body = await response.json() as { connectionKey?: string }
+  if (!body.connectionKey) {
+    throw new Error('Connection key missing in response')
+  }
+
+  return body.connectionKey
 }

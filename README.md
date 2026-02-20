@@ -61,6 +61,7 @@ Optional tuning vars (all have defaults):
 - `MEMORY_EXTRACTION_THRESHOLD`
 - `MEMORY_EXTRACTION_TOP_K`
 - `MEMORY_EXTRACTION_RETRIES`
+- `WS_CONNECTION_KEY_TTL_MS`
 - `MIGRATIONS_TIMEOUT_MS`
 - `MIGRATIONS_RETRY_DELAY_MS`
 - `MIGRATIONS_FOLDER`
@@ -95,9 +96,8 @@ Notes:
 ## HTTP Routes
 
 - `GET /`: basic service response
-- `GET /db/health`: PostgreSQL health check
-- `GET /redis/health`: Redis health check
-- `GET /stream/:maid`: auth-protected streaming endpoint scaffold (`Bearer` token; Better Auth session lookup)
+- `GET /ws/connection-key`: issues a short-lived connection key using `Authorization: Bearer <token>`; accepts optional query param `sessionId`
+- `GET /ws`: websocket endpoint; accepts `maidId` plus either `token` or `connectionKey` query parameter
 
 ## Local Infra With Compose
 
